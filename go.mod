@@ -210,3 +210,5 @@ require (
 replace github.com/ava-labs/coreth => ../coreth
 
 replace github.com/ava-labs/libevm => ../libevm
+
+replace github.com/ava-labs/firewood-go-ethhash/ffi => ../firewood/ffi
