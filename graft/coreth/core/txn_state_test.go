@@ -37,8 +37,11 @@ func TestTxnStateReadOwnWrites(t *testing.T) {
 	if len(tx.readSet) != 0 {
 		t.Fatalf("expected no base reads when reading own writes, got %d", len(tx.readSet))
 	}
-	if got := len(tx.storageWrites[addr]); got != 2 {
-		t.Fatalf("expected two tracked storage entries, got %d", got)
+	if _, ok := tx.writeSet.Get(StorageKey(addr, slot)); !ok {
+		t.Fatalf("expected first storage slot write to be tracked in writeSet")
+	}
+	if _, ok := tx.writeSet.Get(StorageKey(addr, slot2)); !ok {
+		t.Fatalf("expected second storage slot write to be tracked in writeSet")
 	}
 }
 
@@ -46,5 +49,28 @@ func TestTxnStateValidatePhase1AlwaysTrue(t *testing.T) {
 	tx := NewTxnState(nil, common.HexToHash("0x1"), 1)
 	if !tx.Validate() {
 		t.Fatalf("expected Validate() to return true in phase-1 direct wrapper")
+	}
+}
+
+func TestTxnStateLifecycleLastOpWins(t *testing.T) {
+	tx := NewTxnState(nil, common.HexToHash("0x2"), 3)
+	addr := common.HexToAddress("0xdef")
+
+	tx.SelfDestruct(addr)
+	tx.CreateAccount(addr)
+	if tx.HasSelfDestructed(addr) {
+		t.Fatalf("expected create after selfdestruct to clear selfdestruct flag")
+	}
+	if !tx.Exist(addr) {
+		t.Fatalf("expected account to exist after create")
+	}
+
+	tx.CreateAccount(addr)
+	tx.Selfdestruct6780(addr)
+	if !tx.HasSelfDestructed(addr) {
+		t.Fatalf("expected selfdestruct6780 after create to mark selfdestructed")
+	}
+	if !tx.Exist(addr) {
+		t.Fatalf("expected suicided account to still be considered existing in tx overlay")
 	}
 }

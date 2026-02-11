@@ -26,13 +26,10 @@ type TxnState struct {
 
 	writeSet *TxWriteSet
 	readSet  map[StateObjectKey]struct{}
-	// Mirrors stateObject's dirtyStorage shape: per-account storage slot writes.
-	storageWrites map[common.Address]map[common.Hash]common.Hash
 
 	refund uint64
 
-	selfDestruct map[common.Address]selfDestructMode
-	created      map[common.Address]struct{}
+	lifecycle map[common.Address]accountLifecycle
 
 	logs     []*types.Log
 	logSize  uint
@@ -43,29 +40,28 @@ type TxnState struct {
 	accessS   map[common.Address]map[common.Hash]struct{}
 }
 
-type selfDestructMode uint8
+type accountLifecycle uint8
 
 const (
-	selfDestructLegacy selfDestructMode = iota + 1
-	selfDestructEIP6780
+	lifecycleCreated accountLifecycle = iota + 1
+	lifecycleSelfDestructLegacy
+	lifecycleSelfDestructEIP6780
 )
 
 var _ vm.StateDB = (*TxnState)(nil)
 
 func NewTxnState(base *state.StateDB, txHash common.Hash, txIndex int) *TxnState {
 	return &TxnState{
-		base:          base,
-		txHash:        txHash,
-		txIndex:       txIndex,
-		writeSet:      NewTxWriteSet(),
-		readSet:       make(map[StateObjectKey]struct{}),
-		storageWrites: make(map[common.Address]map[common.Hash]common.Hash),
-		selfDestruct:  make(map[common.Address]selfDestructMode),
-		created:       make(map[common.Address]struct{}),
-		preimage:      make(map[common.Hash][]byte),
-		transient:     make(map[common.Address]map[common.Hash]common.Hash),
-		accessA:       make(map[common.Address]struct{}),
-		accessS:       make(map[common.Address]map[common.Hash]struct{}),
+		base:      base,
+		txHash:    txHash,
+		txIndex:   txIndex,
+		writeSet:  NewTxWriteSet(),
+		readSet:   make(map[StateObjectKey]struct{}),
+		lifecycle: make(map[common.Address]accountLifecycle),
+		preimage:  make(map[common.Hash][]byte),
+		transient: make(map[common.Address]map[common.Hash]common.Hash),
+		accessA:   make(map[common.Address]struct{}),
+		accessS:   make(map[common.Address]map[common.Hash]struct{}),
 	}
 }
 
@@ -87,15 +83,14 @@ func (t *TxnState) Commit() error {
 		return fmt.Errorf("nil base state")
 	}
 
-	// Account lifecycle ops first.
-	for addr := range t.created {
-		t.base.CreateAccount(addr)
-	}
-	for addr, mode := range t.selfDestruct {
-		switch mode {
-		case selfDestructEIP6780:
+	// Apply account lifecycle with last-op-wins semantics per address.
+	for addr, op := range t.lifecycle {
+		switch op {
+		case lifecycleCreated:
+			t.base.CreateAccount(addr)
+		case lifecycleSelfDestructEIP6780:
 			t.base.Selfdestruct6780(addr)
-		default:
+		case lifecycleSelfDestructLegacy:
 			t.base.SelfDestruct(addr)
 		}
 	}
@@ -115,18 +110,17 @@ func (t *TxnState) Commit() error {
 			if code, ok := value.Code(); ok {
 				t.base.SetCode(key.Address, code)
 			}
-		}
-	}
-	for addr, slots := range t.storageWrites {
-		for slot, value := range slots {
-			t.base.SetState(addr, slot, value)
+		case StateObjectStorage:
+			if storageValue, ok := value.Storage(); ok {
+				t.base.SetState(key.Address, key.Slot, storageValue)
+			}
 		}
 	}
 	return nil
 }
 
 func (t *TxnState) CreateAccount(addr common.Address) {
-	t.created[addr] = struct{}{}
+	t.lifecycle[addr] = lifecycleCreated
 }
 
 func (t *TxnState) SetBalance(addr common.Address, value *uint256.Int) {
@@ -182,17 +176,12 @@ func (t *TxnState) SetNonce(addr common.Address, nonce uint64) {
 }
 
 func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
-	if value, ok := t.writeSet.Get(CodeHashKey(addr)); ok {
-		if hash, ok := value.CodeHash(); ok {
-			return hash
-		}
-	}
 	if value, ok := t.writeSet.Get(CodeKey(addr)); ok {
 		if code, ok := value.Code(); ok {
 			return crypto.Keccak256Hash(code)
 		}
 	}
-	t.readSet[CodeHashKey(addr)] = struct{}{}
+	t.readSet[CodeKey(addr)] = struct{}{}
 	if t.base == nil {
 		return common.Hash{}
 	}
@@ -215,8 +204,6 @@ func (t *TxnState) GetCode(addr common.Address) []byte {
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
 	codeCopy := cloneBytes(code)
 	t.writeSet.Set(CodeKey(addr), NewCodeValue(codeCopy))
-	t.writeSet.Set(CodeHashKey(addr), NewCodeHashValue(crypto.Keccak256Hash(codeCopy)))
-	t.writeSet.Add(CodeSizeKey(addr))
 }
 
 func (t *TxnState) GetCodeSize(addr common.Address) int {
@@ -225,7 +212,7 @@ func (t *TxnState) GetCodeSize(addr common.Address) int {
 			return len(code)
 		}
 	}
-	t.readSet[CodeSizeKey(addr)] = struct{}{}
+	t.readSet[CodeKey(addr)] = struct{}{}
 	if t.base == nil {
 		return 0
 	}
@@ -248,12 +235,12 @@ func (t *TxnState) GetRefund() uint64 {
 }
 
 func (t *TxnState) GetCommittedState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	t.readSet[StorageKey(addr, key)] = struct{}{}
-	if slots, ok := t.storageWrites[addr]; ok {
-		if value, ok := slots[key]; ok {
-			return value
+	if value, ok := t.writeSet.Get(StorageKey(addr, key)); ok {
+		if storageValue, ok := value.Storage(); ok {
+			return storageValue
 		}
 	}
+	t.readSet[StorageKey(addr, key)] = struct{}{}
 	if t.base == nil {
 		return common.Hash{}
 	}
@@ -261,9 +248,9 @@ func (t *TxnState) GetCommittedState(addr common.Address, key common.Hash, _ ...
 }
 
 func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	if slots, ok := t.storageWrites[addr]; ok {
-		if value, ok := slots[key]; ok {
-			return value
+	if value, ok := t.writeSet.Get(StorageKey(addr, key)); ok {
+		if storageValue, ok := value.Storage(); ok {
+			return storageValue
 		}
 	}
 	t.readSet[StorageKey(addr, key)] = struct{}{}
@@ -274,11 +261,7 @@ func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, _ ...stateconf.StateDBStateOption) {
-	if _, ok := t.storageWrites[addr]; !ok {
-		t.storageWrites[addr] = make(map[common.Hash]common.Hash)
-	}
-	t.storageWrites[addr][key] = value
-	t.writeSet.Add(StateRootKey(addr))
+	t.writeSet.Set(StorageKey(addr, key), NewStorageValue(value))
 }
 
 func (t *TxnState) GetTransientState(addr common.Address, key common.Hash) common.Hash {
@@ -298,12 +281,12 @@ func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
-	t.selfDestruct[addr] = selfDestructLegacy
+	t.lifecycle[addr] = lifecycleSelfDestructLegacy
 }
 
 func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
-	if _, ok := t.selfDestruct[addr]; ok {
-		return true
+	if op, ok := t.lifecycle[addr]; ok {
+		return op == lifecycleSelfDestructLegacy || op == lifecycleSelfDestructEIP6780
 	}
 	if t.base == nil {
 		return false
@@ -312,14 +295,15 @@ func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
 }
 
 func (t *TxnState) Selfdestruct6780(addr common.Address) {
-	t.selfDestruct[addr] = selfDestructEIP6780
+	t.lifecycle[addr] = lifecycleSelfDestructEIP6780
 }
 
 func (t *TxnState) Exist(addr common.Address) bool {
-	if _, ok := t.created[addr]; ok {
-		return true
-	}
-	if _, ok := t.selfDestruct[addr]; ok {
+	if op, ok := t.lifecycle[addr]; ok {
+		if op == lifecycleCreated {
+			return true
+		}
+		// Mirrors StateDB behavior where suicided objects can still be considered existing until finalization.
 		return true
 	}
 	if t.base == nil {
@@ -453,10 +437,8 @@ func (t *TxnState) HashCode(addr common.Address) common.Hash {
 func (t *TxnState) Reset() {
 	t.writeSet = NewTxWriteSet()
 	t.readSet = make(map[StateObjectKey]struct{})
-	t.storageWrites = make(map[common.Address]map[common.Hash]common.Hash)
 	t.refund = 0
-	t.selfDestruct = make(map[common.Address]selfDestructMode)
-	t.created = make(map[common.Address]struct{})
+	t.lifecycle = make(map[common.Address]accountLifecycle)
 	t.logs = nil
 	t.logSize = 0
 	t.preimage = make(map[common.Hash][]byte)
@@ -468,14 +450,13 @@ func (t *TxnState) Reset() {
 func (t *TxnState) CloneForRetry() *TxnState {
 	retry := NewTxnState(t.base, t.txHash, t.txIndex)
 	retry.refund = t.refund
-	retry.selfDestruct = maps.Clone(t.selfDestruct)
-	retry.created = maps.Clone(t.created)
-	for addr, slots := range t.storageWrites {
-		retrySlots := make(map[common.Hash]common.Hash, len(slots))
-		for slot, value := range slots {
-			retrySlots[slot] = value
+	retry.lifecycle = maps.Clone(t.lifecycle)
+	for key, value := range t.writeSet.Entries() {
+		if key.Kind == StateObjectStorage {
+			if storageValue, ok := value.Storage(); ok {
+				retry.writeSet.Set(key, NewStorageValue(storageValue))
+			}
 		}
-		retry.storageWrites[addr] = retrySlots
 	}
 	return retry
 }

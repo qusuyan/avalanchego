@@ -15,10 +15,7 @@ const (
 	StateObjectBalance StateObjectKind = iota + 1
 	StateObjectNonce
 	StateObjectCode
-	StateObjectCodeHash
-	StateObjectCodeSize
 	StateObjectStorage
-	StateObjectStateRoot
 )
 
 // StateObjectKey identifies a single tracked object.
@@ -40,28 +37,16 @@ func CodeKey(addr common.Address) StateObjectKey {
 	return StateObjectKey{Kind: StateObjectCode, Address: addr}
 }
 
-func CodeHashKey(addr common.Address) StateObjectKey {
-	return StateObjectKey{Kind: StateObjectCodeHash, Address: addr}
-}
-
-func CodeSizeKey(addr common.Address) StateObjectKey {
-	return StateObjectKey{Kind: StateObjectCodeSize, Address: addr}
-}
-
 func StorageKey(addr common.Address, slot common.Hash) StateObjectKey {
 	return StateObjectKey{Kind: StateObjectStorage, Address: addr, Slot: slot}
 }
 
-func StateRootKey(addr common.Address) StateObjectKey {
-	return StateObjectKey{Kind: StateObjectStateRoot, Address: addr}
-}
-
 // StateObjectValue stores the new value written for a state object.
 type StateObjectValue struct {
-	balance  *uint256.Int
-	nonce    *uint64
-	code     []byte
-	codeHash *common.Hash
+	balance *uint256.Int
+	nonce   *uint64
+	code    []byte
+	storage *common.Hash
 }
 
 func NewBalanceValue(value *uint256.Int) StateObjectValue {
@@ -76,9 +61,9 @@ func NewCodeValue(value []byte) StateObjectValue {
 	return StateObjectValue{code: cloneBytes(value)}
 }
 
-func NewCodeHashValue(value common.Hash) StateObjectValue {
+func NewStorageValue(value common.Hash) StateObjectValue {
 	v := value
-	return StateObjectValue{codeHash: &v}
+	return StateObjectValue{storage: &v}
 }
 
 func (v StateObjectValue) Balance() (*uint256.Int, bool) {
@@ -102,11 +87,11 @@ func (v StateObjectValue) Code() ([]byte, bool) {
 	return cloneBytes(v.code), true
 }
 
-func (v StateObjectValue) CodeHash() (common.Hash, bool) {
-	if v.codeHash == nil {
+func (v StateObjectValue) Storage() (common.Hash, bool) {
+	if v.storage == nil {
 		return common.Hash{}, false
 	}
-	return *v.codeHash, true
+	return *v.storage, true
 }
 
 // TxWriteSet captures keys mutated during a tx run and their new values.

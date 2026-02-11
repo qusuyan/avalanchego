@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 ## Scope
 
@@ -17,19 +17,18 @@ This document summarizes:
 - Creates `StateDB` from parent root via `state.New(parent.Root, bc.stateCache, bc.snaps)`.
 - Starts prefetcher, then calls processor.
 
-2. Block transaction processing:
+2. Block transaction processing (current WIP integration):
 - `graft/coreth/core/state_processor.go:71` (`Process`)
 - Creates one EVM context for the block.
 - Iterates txs strictly in order.
-- Per tx: `TransactionToMessage` -> `statedb.SetTxContext` -> `applyTransaction(...)`.
+- Per tx: `TransactionToMessage` -> `NewTxnState(statedb, txHash, txIndex)` ->
+  `applyTransaction(..., txState, ...)` -> `txState.Commit()`.
 
-3. Transaction application:
+3. Transaction application (current WIP integration):
 - `graft/coreth/core/state_processor.go` (`applyTransaction`)
 - Calls `ApplyMessage(...)`.
-- Then finalizes/intermediate-root path:
-  - Byzantium+: `statedb.Finalise(true)`
-  - pre-Byzantium: `statedb.IntermediateRoot(...)`
-- Builds receipt (`PostState`, gas, logs, etc.).
+- `evm.Reset(...)` uses the passed tx-local state (`TxnState`) as `vm.StateDB`.
+- Builds receipt with cumulative gas and logs; per-tx `PostState` is intentionally empty.
 
 4. State transition core:
 - `ApplyMessage(...)` reaches `graft/coreth/core/state_transition.go`.
@@ -100,8 +99,9 @@ When `BlockState` is introduced, track versions at fine granularity.
 - `Storage(addr, slot)` for each distinct storage key
 
 3. Derived object coupling:
-- `CodeHash(addr)` and `CodeSize(addr)` are coupled to `Code(addr)` and change whenever code changes.
-- `StateRoot(addr)` is coupled to storage and changes whenever any `Storage(addr, slot)` changes.
+- `CodeHash(addr)` is derived from `Code(addr)` and changes whenever code changes, so it does not need a separate tracked object key.
+- `CodeSize(addr)` is derived as `len(Code(addr))`, so it does not need a separate tracked object key.
+- `StateRoot(addr)` is coupled to storage and changes whenever any `Storage(addr, slot)` changes, but it is not tracked as a separate tx-local object key in the current EVM execution path.
 
 4. Validation behavior (future phase):
 - Read-set entries must carry object versions observed during `run`.
@@ -136,10 +136,11 @@ When `BlockState` is introduced, track versions at fine granularity.
 
 ## Next Session Starting Point
 
-1. Define concrete structs/interfaces in `graft/coreth/core` for rw-set artifacts.
-2. Draft `ProcessParallel(...)` control flow in `state_processor.go`.
-3. Identify minimal libevm API surface needed for rw-set capture/apply.
-4. Add a feature flag/config gate to toggle serial vs parallel processor path.
+1. Add/adjust tests for tx-local receipt/log behavior under `TxnState` execution path.
+2. Decide exact `TxnState` commit timing model for upcoming scheduler integration
+   (still ordered, deterministic).
+3. Draft `ProcessParallel(...)` coordinator around existing `TxnState` run+commit hooks.
+4. Add a feature flag/config gate to toggle legacy serial vs `TxnState`-driven path.
 
 ## Staged Migration Plan
 
@@ -258,10 +259,7 @@ const (
     ObjBalance ObjectKind = iota + 1
     ObjNonce
     ObjCode
-    ObjCodeHash
-    ObjCodeSize
     ObjStorage
-    ObjStateRoot
     ObjSuicided
     ObjExist
     ObjEmpty
@@ -388,7 +386,7 @@ type TxnState interface {
 Notes:
 1. `TxnState` intentionally has no trie `IntermediateRoot()` for parallel receipts.
 2. Storage-level `Commit()` is block-level only via `BlockState.Commit(...)`.
-3. Derived key coupling still applies on commit (`Code -> CodeHash/CodeSize`, `Storage -> StateRoot`).
+3. Derived key coupling remains: `CodeHash` and `CodeSize` are derived from `Code`; storage-root coupling remains an underlying state invariant but is not separately tracked in tx-local keys.
 4. When compiling against `vm.StateDB`, keep exact method names/signatures from `../libevm/core/vm/interface.go`.
 5. `Snapshot()`/`RevertToSnapshot()` are intentionally omitted in this design; tx failure or conflict discards the current `TxnState` and schedules another `run` attempt with a fresh `TxnState`.
 6. Tx context is immutable and initialized when creating `TxnState` (for example `NewTxnState(blockState, txHash, txIndex, ...)`); no `SetTxContext` mutator is needed.
@@ -412,9 +410,9 @@ Implemented:
 - typed write-set values for balance/nonce/code/codehash
 - removed redundant code-size value storage (derive from code length)
 
-3. Storage tracking model aligned with `stateObject` semantics:
-- storage writes tracked as per-account slot map
-- `storageWrites map[address]map[slot]value`
+3. Storage tracking model uses tx-local object keys:
+- storage writes tracked as `WriteSet[StorageKey(addr, slot)] = value`
+- keeps `TxnState` as an overlay and avoids mirroring `stateObject` internals
 - supports multiple independent storage entries per account
 
 4. Initial tests in `graft/coreth/core/txn_state_test.go`:
@@ -422,16 +420,29 @@ Implemented:
 - multiple storage-slot tracking on same account
 - phase-1 validate behavior
 
+5. Simplified derived-key tracking and lifecycle modeling:
+- `CodeHash` and `CodeSize` are derived from `Code` (no separate tx-local object keys)
+- `StateRoot` is not tracked as a separate tx-local object key
+- account lifecycle uses one per-address state map with last-op-wins semantics
+  (instead of separate `created` and `selfDestruct` maps)
+
+6. Initial state-processor integration in `graft/coreth/core/state_processor.go`:
+- creates one `TxnState` per tx in block order
+- passes `TxnState` into `applyTransaction(...)` so `evm.Reset(...)` executes on tx-local overlay
+- commits tx-local writes to canonical `statedb` via `txState.Commit()`
+- removed per-tx `IntermediateRoot()`/`Finalise()` calls from `applyTransaction(...)`
+- keeps block-level finalization and validation paths on canonical `statedb`
+
 Removed/replaced:
 
 1. Removed `VersionedStateDB` path and related files from active implementation.
-2. Replaced earlier generic storage scalar tracking with per-slot storage maps.
+2. Replaced earlier generic storage scalar tracking with storage-keyed write-set entries.
 
 Deferred to next phase:
 
 1. Block-level versioned validation in `BlockState`.
 2. Parallel scheduler integration in `ProcessParallel(...)`.
-3. Wiring `TxnState` into block processing path.
+3. Feature-flag/config gating for rollout between legacy serial and new `TxnState` path.
 
 Environment note:
 
