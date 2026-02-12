@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ## Scope
 
@@ -22,7 +22,7 @@ This document summarizes:
 - Creates one EVM context for the block.
 - Iterates txs strictly in order.
 - Per tx: `TransactionToMessage` -> `NewTxnState(statedb, txHash, txIndex)` ->
-  `applyTransaction(..., txState, ...)` -> `txState.Commit()`.
+  `applyTransaction(..., txState, ...)` -> `txState.finalise()`.
 
 3. Transaction application (current WIP integration):
 - `graft/coreth/core/state_processor.go` (`applyTransaction`)
@@ -448,3 +448,53 @@ Environment note:
 
 1. Local `go test` remains blocked by unrelated dependency/toolchain issues
 (`zstd`, `blst`, `libevm/crypto` mismatch), so compile/test verification is incomplete.
+
+### 2026-02-12
+
+Implemented:
+
+1. Cross-repo account-extra plumbing to make `GetExtra`/`SetExtra` trackable through
+   tx-local overlays:
+- `libevm/core/state/state.libevm.go`: introduced `StateDBExt`-based extra accessors.
+- `libevm/core/types/rlp_payload.libevm.go`: `StateAccount` accessor target now uses
+  `**StateAccountExtra` so nil extras can be safely materialized.
+- `libevm/core/state/statedb.go` + `libevm/core/state/state_object.go`: `SetExtra`
+  now goes through object creation + journaled mutation path.
+
+2. Coreth extstate backend contract generalized:
+- `graft/coreth/core/extstate/statedb.go`: new `Backend` interface
+  (`vm.StateDB` + `state.StateDBExt` + `Logs/Commit/Finalise`), allowing extstate to
+  wrap either canonical `*state.StateDB` or tx-local overlay implementations that
+  satisfy the same contract.
+
+3. TxnState extra tracking integrated:
+- `graft/coreth/core/parallel_state_types.go`: added `StateObjectExtra` and `ExtraKey`.
+- `graft/coreth/core/txn_state.go`: added `GetExtra`/`SetExtra` overlay behavior and
+  canonical apply path for `StateObjectExtra` during tx-local finalization.
+
+4. EVM wrapping hardening:
+- `graft/coreth/core/evm.go`: `wrapStateDB(...)` now checks whether `vm.StateDB`
+  satisfies `extstate.Backend` before wrapping, avoiding a hard panic on unsupported
+  implementations.
+
+5. Processor integration detail:
+- `graft/coreth/core/state_processor.go`: per-tx path applies tx-local writes via
+  `txState.finalise()` (overlay apply only), while block-level finalization remains on
+  canonical `statedb`.
+
+Validation status (targeted):
+
+1. `libevm`:
+- `go test ./core/state -run 'TestGetSetExtra|TestStateObjectEmpty' -count=1` (pass)
+- `go test ./core/types -run TestStateAccountExtraViaTrieStorage -count=1` (pass)
+
+2. `coreth`:
+- `go test ./graft/coreth/core -run TestStateProcessor -count=1` (pass)
+- `go test ./graft/coreth/core/extstate -run 'TestMultiCoinOperations|TestGenerateMultiCoinAccounts' -count=1` (pass)
+- `go test ./graft/coreth/plugin/evm/tempextrastest -count=1` (pass)
+- `go test ./graft/coreth/core -run TestCreateThenDeletePostByzantium -count=1` (pass)
+
+Notes:
+
+1. Full-suite verification was not rerun in this session; only focused regression and
+   integration targets around account extras and tx-local execution were run.
