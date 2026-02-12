@@ -185,20 +185,7 @@ Acceptance criteria:
 - Deterministic ordered commit with parallel run attempts.
 - `TxnState` methods are compatible with current EVM `vm.StateDB` usage.
 
-### Phase 2: Parallel Processor Path
-
-Goal: run txs in parallel using scheduler while preserving deterministic commit.
-
-1. Add `ProcessParallel(...)` in `state_processor.go`.
-2. Scheduler creates `TxnState` per run attempt.
-3. Commit coordinator validates read sets and commits by tx index order.
-4. On conflict, schedule another run attempt (no sequential fallback, no max-retry abort for now).
-
-Acceptance criteria:
-- Same block output as serial path on conflict-free and conflict-heavy test sets.
-- Deterministic results across repeated runs.
-
-### Phase 3: Introduce BlockState (Database-Backed Canonical State)
+### Phase 2: Introduce BlockState (Database-Backed Canonical State)
 
 Goal: move canonical ownership from `state.StateDB` toward new `BlockState`.
 
@@ -214,6 +201,19 @@ Goal: move canonical ownership from `state.StateDB` toward new `BlockState`.
 Acceptance criteria:
 - Parallel path no longer depends on canonical `state.StateDB` for reads/writes.
 - Snapshot/trie commit behavior remains correct.
+
+### Phase 3: Parallel Processor Path
+
+Goal: run txs in parallel using scheduler while preserving deterministic commit.
+
+1. Add `ProcessParallel(...)` in `state_processor.go`.
+2. Scheduler creates `TxnState` per run attempt.
+3. Commit coordinator validates read sets and commits by tx index order.
+4. On conflict, schedule another run attempt (no sequential fallback, no max-retry abort for now).
+
+Acceptance criteria:
+- Same block output as serial path on conflict-free and conflict-heavy test sets.
+- Deterministic results across repeated runs.
 
 ### Phase 4: Semantics Parity and Hardening
 
