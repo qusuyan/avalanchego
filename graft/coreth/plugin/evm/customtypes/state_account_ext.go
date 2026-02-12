@@ -12,14 +12,14 @@ import (
 
 type isMultiCoin bool
 
-func IsMultiCoin(s *state.StateDB, addr common.Address) bool {
+func IsMultiCoin(s state.StateDBExt, addr common.Address) bool {
 	return bool(state.GetExtra(s, extras.StateAccount, addr))
 }
 
-func SetMultiCoin(s *state.StateDB, addr common.Address, to bool) {
+func SetMultiCoin(s state.StateDBExt, addr common.Address, to bool) {
 	state.SetExtra(s, extras.StateAccount, addr, isMultiCoin(to))
 }
 
-func IsAccountMultiCoin(s ethtypes.StateOrSlimAccount) bool {
-	return bool(extras.StateAccount.Get(s))
+func IsAccountMultiCoin(s *ethtypes.StateAccountExtra) bool {
+	return bool(extras.StateAccount.Get(&s))
 }

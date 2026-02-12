@@ -38,7 +38,6 @@ import (
 	"github.com/ava-labs/avalanchego/graft/coreth/plugin/evm/customheader"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/consensus/misc/eip4844"
-	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
 	"github.com/ava-labs/libevm/libevm"
@@ -102,7 +101,7 @@ func (hooks) OverrideEVMResetArgs(rules params.Rules, args *vm.EVMResetArgs) *vm
 }
 
 func wrapStateDB(rules params.Rules, statedb vm.StateDB) vm.StateDB {
-	wrappedStateDB := extstate.New(statedb.(*state.StateDB))
+	wrappedStateDB := extstate.New(statedb.(extstate.Backend))
 	if params.GetRulesExtra(rules).IsApricotPhase1 {
 		return wrappedStateDB
 	}

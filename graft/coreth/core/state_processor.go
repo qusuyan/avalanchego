@@ -107,9 +107,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		if err := txState.Commit(); err != nil {
-			return nil, nil, 0, fmt.Errorf("could not commit tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-		}
+		txState.Finalise(true)
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}

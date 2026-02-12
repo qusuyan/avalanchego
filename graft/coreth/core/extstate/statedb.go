@@ -9,6 +9,7 @@ import (
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
+	"github.com/ava-labs/libevm/core/vm"
 	"github.com/ava-labs/libevm/libevm"
 	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/holiman/uint256"
@@ -47,8 +48,17 @@ func (normalizeStateKeysHook) TransformStateKey(_ common.Address, key common.Has
 	return key
 }
 
+type Backend interface {
+	vm.StateDB
+	state.StateDBExt
+
+	Logs() []*types.Log
+	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
+	Finalise(deleteEmptyObjects bool)
+}
+
 type StateDB struct {
-	*state.StateDB
+	Backend
 
 	// Ordered storage slots to be used in predicate verification as set in the tx access list.
 	// Only set in [StateDB.Prepare], and un-modified through execution.
@@ -57,9 +67,9 @@ type StateDB struct {
 
 // New creates a new [StateDB] with the given [state.StateDB], wrapping it with
 // additional functionality.
-func New(vm *state.StateDB) *StateDB {
+func New(vm Backend) *StateDB {
 	return &StateDB{
-		StateDB:    vm,
+		Backend:    vm,
 		predicates: make(map[common.Address][]predicate.Predicate),
 	}
 }
@@ -67,7 +77,7 @@ func New(vm *state.StateDB) *StateDB {
 func (s *StateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
 	rulesExtra := params.GetRulesExtra(rules)
 	s.predicates = predicate.FromAccessList(rulesExtra, list)
-	s.StateDB.Prepare(rules, sender, coinbase, dst, precompiles, list)
+	s.Backend.Prepare(rules, sender, coinbase, dst, precompiles, list)
 }
 
 // GetPredicate returns the storage slots associated with the address, index pair.
@@ -101,8 +111,8 @@ func (s *StateDB) AddBalanceMultiCoin(addr common.Address, coinID common.Hash, a
 		return
 	}
 
-	if !customtypes.IsMultiCoin(s.StateDB, addr) {
-		customtypes.SetMultiCoin(s.StateDB, addr, true)
+	if !customtypes.IsMultiCoin(s.Backend, addr) {
+		customtypes.SetMultiCoin(s.Backend, addr, true)
 	}
 
 	newAmount := new(big.Int).Add(s.GetBalanceMultiCoin(addr, coinID), amount)
@@ -118,8 +128,8 @@ func (s *StateDB) SubBalanceMultiCoin(addr common.Address, coinID common.Hash, a
 	// Note: It's not needed to set the IsMultiCoin (extras) flag here, as this
 	// call would always be preceded by a call to AddBalanceMultiCoin, which would
 	// set the extra flag. Seems we should remove the redundant code.
-	if !customtypes.IsMultiCoin(s.StateDB, addr) {
-		customtypes.SetMultiCoin(s.StateDB, addr, true)
+	if !customtypes.IsMultiCoin(s.Backend, addr) {
+		customtypes.SetMultiCoin(s.Backend, addr, true)
 	}
 	newAmount := new(big.Int).Sub(s.GetBalanceMultiCoin(addr, coinID), amount)
 	normalizeCoinID(&coinID)

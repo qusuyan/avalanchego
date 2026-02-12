@@ -5,6 +5,7 @@ package core
 
 import (
 	"github.com/ava-labs/libevm/common"
+	"github.com/ava-labs/libevm/core/types"
 	"github.com/holiman/uint256"
 )
 
@@ -16,6 +17,7 @@ const (
 	StateObjectNonce
 	StateObjectCode
 	StateObjectStorage
+	StateObjectExtra
 )
 
 // StateObjectKey identifies a single tracked object.
@@ -41,12 +43,17 @@ func StorageKey(addr common.Address, slot common.Hash) StateObjectKey {
 	return StateObjectKey{Kind: StateObjectStorage, Address: addr, Slot: slot}
 }
 
+func ExtraKey(addr common.Address) StateObjectKey {
+	return StateObjectKey{Kind: StateObjectExtra, Address: addr}
+}
+
 // StateObjectValue stores the new value written for a state object.
 type StateObjectValue struct {
 	balance *uint256.Int
 	nonce   *uint64
 	code    []byte
 	storage *common.Hash
+	extra   *types.StateAccountExtra
 }
 
 func NewBalanceValue(value *uint256.Int) StateObjectValue {
@@ -64,6 +71,10 @@ func NewCodeValue(value []byte) StateObjectValue {
 func NewStorageValue(value common.Hash) StateObjectValue {
 	v := value
 	return StateObjectValue{storage: &v}
+}
+
+func NewExtraValue(value *types.StateAccountExtra) StateObjectValue {
+	return StateObjectValue{extra: value}
 }
 
 func (v StateObjectValue) Balance() (*uint256.Int, bool) {
@@ -92,6 +103,13 @@ func (v StateObjectValue) Storage() (common.Hash, bool) {
 		return common.Hash{}, false
 	}
 	return *v.storage, true
+}
+
+func (v StateObjectValue) Extra() (*types.StateAccountExtra, bool) {
+	if v.extra == nil {
+		return nil, false
+	}
+	return v.extra, true
 }
 
 // TxWriteSet captures keys mutated during a tx run and their new values.

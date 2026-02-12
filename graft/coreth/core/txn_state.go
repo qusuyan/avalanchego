@@ -5,7 +5,6 @@ package core
 
 import (
 	"fmt"
-	"maps"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
@@ -78,7 +77,7 @@ func (t *TxnState) Validate() bool {
 	return true
 }
 
-func (t *TxnState) Commit() error {
+func (t *TxnState) finalise() error {
 	if t.base == nil {
 		return fmt.Errorf("nil base state")
 	}
@@ -114,9 +113,21 @@ func (t *TxnState) Commit() error {
 			if storageValue, ok := value.Storage(); ok {
 				t.base.SetState(key.Address, key.Slot, storageValue)
 			}
+		case StateObjectExtra:
+			if extra, ok := value.Extra(); ok {
+				t.base.SetExtra(key.Address, extra)
+			}
 		}
 	}
 	return nil
+}
+
+func (t *TxnState) Finalise(deleteEmptyObjects bool) {
+	if err := t.finalise(); err != nil {
+		return
+	}
+	t.base.Finalise(deleteEmptyObjects)
+	return
 }
 
 func (t *TxnState) CreateAccount(addr common.Address) {
@@ -408,7 +419,7 @@ func (t *TxnState) AddPreimage(hash common.Hash, preimage []byte) {
 
 func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log {
 	if hash != t.txHash {
-		return nil
+		return t.base.GetLogs(hash, blockNumber, blockHash)
 	}
 	out := make([]*types.Log, len(t.logs))
 	for i, entry := range t.logs {
@@ -417,6 +428,12 @@ func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash commo
 		entryCopy.BlockHash = blockHash
 		out[i] = &entryCopy
 	}
+	return out
+}
+
+func (t *TxnState) Logs() []*types.Log {
+	out := make([]*types.Log, len(t.logs))
+	copy(out, t.logs)
 	return out
 }
 
@@ -430,33 +447,26 @@ func (t *TxnState) Preimages() map[common.Hash][]byte {
 	return out
 }
 
-func (t *TxnState) HashCode(addr common.Address) common.Hash {
-	return crypto.Keccak256Hash(t.GetCode(addr))
-}
-
-func (t *TxnState) Reset() {
-	t.writeSet = NewTxWriteSet()
-	t.readSet = make(map[StateObjectKey]struct{})
-	t.refund = 0
-	t.lifecycle = make(map[common.Address]accountLifecycle)
-	t.logs = nil
-	t.logSize = 0
-	t.preimage = make(map[common.Hash][]byte)
-	t.transient = make(map[common.Address]map[common.Hash]common.Hash)
-	t.accessA = make(map[common.Address]struct{})
-	t.accessS = make(map[common.Address]map[common.Hash]struct{})
-}
-
-func (t *TxnState) CloneForRetry() *TxnState {
-	retry := NewTxnState(t.base, t.txHash, t.txIndex)
-	retry.refund = t.refund
-	retry.lifecycle = maps.Clone(t.lifecycle)
-	for key, value := range t.writeSet.Entries() {
-		if key.Kind == StateObjectStorage {
-			if storageValue, ok := value.Storage(); ok {
-				retry.writeSet.Set(key, NewStorageValue(storageValue))
-			}
+func (t *TxnState) GetExtra(addr common.Address) *types.StateAccountExtra {
+	if value, ok := t.writeSet.Get(ExtraKey(addr)); ok {
+		if extra, ok := value.Extra(); ok {
+			return extra
 		}
 	}
-	return retry
+	t.readSet[ExtraKey(addr)] = struct{}{}
+	if t.base == nil {
+		return nil
+	}
+	return t.base.GetExtra(addr)
+}
+
+func (t *TxnState) SetExtra(addr common.Address, extra *types.StateAccountExtra) {
+	t.writeSet.Set(ExtraKey(addr), NewExtraValue(extra))
+}
+
+func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
+	if err := t.finalise(); err != nil {
+		return common.Hash{}, err
+	}
+	return t.base.Commit(block, deleteEmptyObjects, opts...)
 }
