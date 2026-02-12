@@ -107,7 +107,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		txState.Finalise(true)
+		txState.Finalise(true) // write changes in TxnState back
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}

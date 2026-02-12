@@ -111,6 +111,9 @@ func (s *StateDB) AddBalanceMultiCoin(addr common.Address, coinID common.Hash, a
 		return
 	}
 
+	// suyan: My wild guess is that this is not needed - we only ever call IsMultiCoin
+	// before calling SetMultiCoin, so it does not matter if we actually write this bit
+	// to account's extra data or not, which will render my work today meaningless.
 	if !customtypes.IsMultiCoin(s.Backend, addr) {
 		customtypes.SetMultiCoin(s.Backend, addr, true)
 	}
