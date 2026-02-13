@@ -113,6 +113,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 			txState.Finalise(true) // write changes in TxnState back
 			continue
 		} else {
+			statedb.SetTxContext(tx.Hash(), i)
 			receipt, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
