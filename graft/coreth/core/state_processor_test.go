@@ -58,11 +58,19 @@ import (
 
 func u64(val uint64) *uint64 { return &val }
 
+func TestStateProcessorErrors(t *testing.T) {
+	testStateProcessorErrors(t, false)
+}
+
+func TestStateProcessorErrorsParallel(t *testing.T) {
+	testStateProcessorErrors(t, true)
+}
+
 // TestStateProcessorErrors tests the output from the 'core' errors
 // as defined in core/error.go. These errors are generated when the
 // blockchain imports bad blocks, meaning blocks which have valid headers but
 // contain invalid transactions
-func TestStateProcessorErrors(t *testing.T) {
+func testStateProcessorErrors(t *testing.T, parallelExecEnabled bool) {
 	cpcfg := *params.TestChainConfig
 	config := &cpcfg
 	config.ShanghaiTime = u64(0)
@@ -130,7 +138,7 @@ func TestStateProcessorErrors(t *testing.T) {
 				GasLimit: cortina.GasLimit,
 			}
 			// FullFaker used to skip header verification that enforces no blobs.
-			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{}, common.Hash{}, false)
+			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
 			tooBigInitCode = [ethparams.MaxInitCodeSize + 1]byte{}
 		)
 
@@ -296,7 +304,7 @@ func TestStateProcessorErrors(t *testing.T) {
 				},
 				GasLimit: ap1.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {
@@ -336,7 +344,7 @@ func TestStateProcessorErrors(t *testing.T) {
 				},
 				GasLimit: cortina.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {
