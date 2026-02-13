@@ -106,7 +106,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		var receipt *types.Receipt
 		if parallelEnabled {
 			txState := NewTxnState(statedb, tx.Hash(), i)
-			receipt, err = applyTransactionSpeculative(msg, p.config, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
+			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
@@ -178,7 +178,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	return receipt, err
 }
 
-func applyTransactionSpeculative(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *TxnState, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+func applyTransactionSpeculative(msg *Message, gp *GasPool, statedb *TxnState, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
