@@ -96,18 +96,28 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
 	}
+	parallelEnabled := cfg.ParallelExecutionEnabled
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		txState := NewTxnState(statedb, tx.Hash(), i)
-		receipt, err := applyTransaction(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+		var receipt *types.Receipt
+		if parallelEnabled {
+			txState := NewTxnState(statedb, tx.Hash(), i)
+			receipt, err = applyTransactionSpeculative(msg, p.config, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+			txState.Finalise(true) // write changes in TxnState back
+			continue
+		} else {
+			receipt, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
 		}
-		txState.Finalise(true) // write changes in TxnState back
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}
@@ -119,7 +129,56 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	return receipts, allLogs, *usedGas, nil
 }
 
-func applyTransaction(msg *Message, gp *GasPool, statedb vm.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+	// Create a new context to be used in the EVM environment.
+	txContext := NewEVMTxContext(msg)
+	evm.Reset(txContext, statedb)
+
+	// Apply the transaction to the current state (included in the env).
+	result, err := ApplyMessage(evm, msg, gp)
+	if err != nil {
+		return nil, err
+	}
+
+	var root []byte
+	if config.IsByzantium(blockNumber) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
+	}
+	*usedGas += result.UsedGas
+
+	// Create a new receipt for the transaction, storing the intermediate root and gas used
+	// by the tx.
+	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: *usedGas}
+	if result.Failed() {
+		receipt.Status = types.ReceiptStatusFailed
+	} else {
+		receipt.Status = types.ReceiptStatusSuccessful
+	}
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = result.UsedGas
+
+	if tx.Type() == types.BlobTxType {
+		receipt.BlobGasUsed = uint64(len(tx.BlobHashes()) * ethparams.BlobTxBlobGasPerBlob)
+		receipt.BlobGasPrice = evm.Context.BlobBaseFee
+	}
+
+	// If the transaction created a contract, store the creation address in the receipt.
+	if msg.To == nil {
+		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
+	}
+
+	// Set the receipt logs and create the bloom filter.
+	receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
+	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	receipt.BlockHash = blockHash
+	receipt.BlockNumber = blockNumber
+	receipt.TransactionIndex = uint(statedb.TxIndex())
+	return receipt, err
+}
+
+func applyTransactionSpeculative(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *TxnState, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)
@@ -154,11 +213,7 @@ func applyTransaction(msg *Message, gp *GasPool, statedb vm.StateDB, blockNumber
 	}
 
 	// Set the receipt logs and create the bloom filter.
-	if logState, ok := statedb.(interface {
-		GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log
-	}); ok {
-		receipt.Logs = logState.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
-	}
+	receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 	receipt.BlockHash = blockHash
 	receipt.BlockNumber = blockNumber
@@ -178,7 +233,7 @@ func ApplyTransaction(config *params.ChainConfig, bc ChainContext, blockContext 
 	// Create a new context to be used in the EVM environment
 	txContext := NewEVMTxContext(msg)
 	vmenv := vm.NewEVM(blockContext, txContext, statedb, config, cfg)
-	return applyTransaction(msg, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
+	return applyTransaction(msg, config, gp, statedb, header.Number, header.Hash(), tx, usedGas, vmenv)
 }
 
 // ProcessBeaconBlockRoot applies the EIP-4788 system call to the beacon block root

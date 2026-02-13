@@ -63,6 +63,8 @@ func NewDefaultConfig() Config {
 		TrieDirtyCache:            256,
 		TrieDirtyCommitTarget:     20,
 		TriePrefetcherParallelism: 16,
+		ParallelExecutionEnabled:  false,
+		ParallelExecutionWorkers:  0,
 		SnapshotCache:             256,
 		AcceptedCacheSize:         32,
 		Miner:                     miner.Config{},
@@ -106,6 +108,8 @@ type Config struct {
 	TrieDirtyCache            int
 	TrieDirtyCommitTarget     int
 	TriePrefetcherParallelism int
+	ParallelExecutionEnabled  bool // Enables the experimental parallel tx execution path.
+	ParallelExecutionWorkers  int  // Worker count for parallel tx execution (0 means runtime default).
 	SnapshotCache             int
 	Preimages                 bool
 

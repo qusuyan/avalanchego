@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13
 
 ## Scope
 
@@ -42,7 +42,7 @@ This document summarizes:
 - `StateDB` type and constructor are in `../libevm/core/state/statedb.go`.
 - Constructor: `New(root common.Hash, db Database, snaps SnapshotTree) (*StateDB, error)`.
 - Current workspace uses module-versioned `github.com/ava-labs/libevm`.
-- `go.work` currently does **not** include local `../libevm`; local libevm edits are not active yet.
+- Local workspace wiring is through `go.mod` replace (`github.com/ava-labs/libevm => ../libevm`).
 
 ## Agreed Parallel Direction (No Sequential Fallback)
 
@@ -139,27 +139,23 @@ When `BlockState` is introduced, track versions at fine granularity.
 1. Add/adjust tests for tx-local receipt/log behavior under `TxnState` execution path.
 2. Decide exact `TxnState` commit timing model for upcoming scheduler integration
    (still ordered, deterministic).
-3. Draft `ProcessParallel(...)` coordinator around existing `TxnState` run+commit hooks.
-4. Add a feature flag/config gate to toggle legacy serial vs `TxnState`-driven path.
+3. Complete feature flag/config gate wiring and test toggling behavior.
+4. Enter Phase 2 (`BlockState`) before starting scheduler and validation work planned for Phase 3.
 
 ## Staged Migration Plan
 
-### Phase 0: Contracts and Feature Gate
+### Phase 0: Feature Gate
 
-Goal: lock interfaces before behavior changes.
+Goal: add rollout controls before behavior changes.
 
 1. Add feature flags:
 - `ParallelExecutionEnabled`
 - `ParallelExecutionWorkers`
 
-2. Define interfaces in `graft/coreth/core`:
-- `BlockStateView` (future canonical state owner)
-- `TxnStateView` (EVM-facing state methods + `Commit()` + `Validate()`)
-
-3. Keep existing serial path unchanged and default.
+2. Keep existing serial path unchanged and default.
 
 Acceptance criteria:
-- Build compiles with new interfaces and flags.
+- Build compiles with new flags.
 - No runtime behavior change when flag is disabled.
 
 ### Phase 1: TxnState Overlay on Existing StateDB
@@ -176,10 +172,7 @@ Goal: introduce per-tx read/write tracking without replacing canonical storage y
 - Applies write set into canonical state in deterministic commit order.
 - Uses immutable tx context (`txHash`, `txIndex`) created with `TxnState`.
 
-3. Implement `Validate()` as a phase-1 placeholder returning `true` (conflict
-validation deferred until `BlockState` version tracking is added).
-
-4. Keep receipt `PostState` empty in parallel mode.
+3. Keep receipt `PostState` empty in parallel mode.
 
 Acceptance criteria:
 - Deterministic ordered commit with parallel run attempts.
@@ -208,8 +201,9 @@ Goal: run txs in parallel using scheduler while preserving deterministic commit.
 
 1. Add `ProcessParallel(...)` in `state_processor.go`.
 2. Scheduler creates `TxnState` per run attempt.
-3. Commit coordinator validates read sets and commits by tx index order.
-4. On conflict, schedule another run attempt (no sequential fallback, no max-retry abort for now).
+3. Move `TxnState.Validate()` from phase-1 placeholder behavior to coordinator-driven conflict checks.
+4. Commit coordinator validates read sets and commits by tx index order.
+5. On conflict, schedule another run attempt (no sequential fallback, no max-retry abort for now).
 
 Acceptance criteria:
 - Same block output as serial path on conflict-free and conflict-heavy test sets.
@@ -442,7 +436,6 @@ Deferred to next phase:
 
 1. Block-level versioned validation in `BlockState`.
 2. Parallel scheduler integration in `ProcessParallel(...)`.
-3. Feature-flag/config gating for rollout between legacy serial and new `TxnState` path.
 
 Environment note:
 
@@ -493,6 +486,22 @@ Validation status (targeted):
 - `go test ./graft/coreth/core/extstate -run 'TestMultiCoinOperations|TestGenerateMultiCoinAccounts' -count=1` (pass)
 - `go test ./graft/coreth/plugin/evm/tempextrastest -count=1` (pass)
 - `go test ./graft/coreth/core -run TestCreateThenDeletePostByzantium -count=1` (pass)
+
+### 2026-02-13
+
+Implemented:
+
+1. Added feature flags in `graft/coreth/eth/ethconfig/config.go`:
+- `ParallelExecutionEnabled`
+- `ParallelExecutionWorkers`
+
+2. Regenerated `graft/coreth/eth/ethconfig/gen_config.go` so the new fields are
+   included in TOML marshal/unmarshal.
+
+3. Updated this staged plan:
+- removed explicit `BlockStateView` / `TxnStateView` phase requirement
+- kept `ProcessParallel(...)` and validation work in Phase 3
+- updated local libevm workspace note to reflect `go.mod` replace wiring
 
 Notes:
 
