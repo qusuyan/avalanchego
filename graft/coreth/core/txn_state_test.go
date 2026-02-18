@@ -34,8 +34,8 @@ func TestTxnStateReadOwnWrites(t *testing.T) {
 	if got := tx.GetCodeSize(addr); got != 2 {
 		t.Fatalf("unexpected code size: %d", got)
 	}
-	if len(tx.readSet) != 0 {
-		t.Fatalf("expected no base reads when reading own writes, got %d", len(tx.readSet))
+	if len(tx.readSet.objectVersions) != 0 {
+		t.Fatalf("expected no base reads when reading own writes, got %d", len(tx.readSet.objectVersions))
 	}
 	if _, ok := tx.writeSet.Get(StorageKey(addr, slot)); !ok {
 		t.Fatalf("expected first storage slot write to be tracked in writeSet")

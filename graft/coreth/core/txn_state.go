@@ -4,13 +4,13 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
-	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/ava-labs/libevm/params"
 	"github.com/holiman/uint256"
@@ -19,48 +19,35 @@ import (
 // TxnState is a transaction-local state overlay with read/write tracking.
 // Reads check local writes first, then fallback to wrapped canonical state.
 type TxnState struct {
-	base    *state.StateDB
+	base    BlockState
 	txHash  common.Hash
 	txIndex int
 
 	writeSet *TxWriteSet
-	readSet  map[StateObjectKey]struct{}
+	readSet  *TxReadSet
 
 	refund uint64
-
-	lifecycle map[common.Address]accountLifecycle
 
 	logs     []*types.Log
 	logSize  uint
 	preimage map[common.Hash][]byte
 
-	transient map[common.Address]map[common.Hash]common.Hash
-	accessA   map[common.Address]struct{}
-	accessS   map[common.Address]map[common.Hash]struct{}
+	transient  state.TransientStorage
+	accessList *state.AccessList
 }
-
-type accountLifecycle uint8
-
-const (
-	lifecycleCreated accountLifecycle = iota + 1
-	lifecycleSelfDestructLegacy
-	lifecycleSelfDestructEIP6780
-)
 
 var _ vm.StateDB = (*TxnState)(nil)
 
-func NewTxnState(base *state.StateDB, txHash common.Hash, txIndex int) *TxnState {
+func NewTxnState(base BlockState, txHash common.Hash, txIndex int) *TxnState {
 	return &TxnState{
-		base:      base,
-		txHash:    txHash,
-		txIndex:   txIndex,
-		writeSet:  NewTxWriteSet(),
-		readSet:   make(map[StateObjectKey]struct{}),
-		lifecycle: make(map[common.Address]accountLifecycle),
-		preimage:  make(map[common.Hash][]byte),
-		transient: make(map[common.Address]map[common.Hash]common.Hash),
-		accessA:   make(map[common.Address]struct{}),
-		accessS:   make(map[common.Address]map[common.Hash]struct{}),
+		base:       base,
+		txHash:     txHash,
+		txIndex:    txIndex,
+		writeSet:   NewTxWriteSet(),
+		readSet:    &TxReadSet{},
+		preimage:   make(map[common.Hash][]byte),
+		transient:  state.NewTransientStorage(),
+		accessList: state.NewAccessList(),
 	}
 }
 
@@ -81,57 +68,19 @@ func (t *TxnState) finalise() error {
 	if t.base == nil {
 		return fmt.Errorf("nil base state")
 	}
-
-	// Apply account lifecycle with last-op-wins semantics per address.
-	for addr, op := range t.lifecycle {
-		switch op {
-		case lifecycleCreated:
-			t.base.CreateAccount(addr)
-		case lifecycleSelfDestructEIP6780:
-			t.base.Selfdestruct6780(addr)
-		case lifecycleSelfDestructLegacy:
-			t.base.SelfDestruct(addr)
-		}
-	}
-
-	// Apply typed writes to canonical state.
-	for key, value := range t.writeSet.Entries() {
-		switch key.Kind {
-		case StateObjectBalance:
-			if balance, ok := value.Balance(); ok {
-				t.base.SetBalance(key.Address, balance)
-			}
-		case StateObjectNonce:
-			if nonce, ok := value.Nonce(); ok {
-				t.base.SetNonce(key.Address, nonce)
-			}
-		case StateObjectCode:
-			if code, ok := value.Code(); ok {
-				t.base.SetCode(key.Address, code)
-			}
-		case StateObjectStorage:
-			if storageValue, ok := value.Storage(); ok {
-				t.base.SetState(key.Address, key.Slot, storageValue)
-			}
-		case StateObjectExtra:
-			if extra, ok := value.Extra(); ok {
-				t.base.SetExtra(key.Address, extra)
-			}
-		}
-	}
-	return nil
+	return t.base.ApplyWriteSet(uint64(t.txIndex), t.writeSet)
 }
 
+// This function is used for testing purposes
 func (t *TxnState) Finalise(deleteEmptyObjects bool) {
 	if err := t.finalise(); err != nil {
-		return
+		panic(err)
 	}
-	t.base.Finalise(deleteEmptyObjects)
 	return
 }
 
 func (t *TxnState) CreateAccount(addr common.Address) {
-	t.lifecycle[addr] = lifecycleCreated
+	t.writeSet.CreateAccount(addr)
 }
 
 func (t *TxnState) SetBalance(addr common.Address, value *uint256.Int) {
@@ -157,29 +106,21 @@ func (t *TxnState) AddBalance(addr common.Address, amount *uint256.Int) {
 }
 
 func (t *TxnState) GetBalance(addr common.Address) *uint256.Int {
-	if value, ok := t.writeSet.Get(BalanceKey(addr)); ok {
+	if value, err := t.read(BalanceKey(addr)); err == nil {
 		if balance, ok := value.Balance(); ok {
 			return balance
 		}
 	}
-	t.readSet[BalanceKey(addr)] = struct{}{}
-	if t.base == nil {
-		return uint256.NewInt(0)
-	}
-	return cloneU256(t.base.GetBalance(addr))
+	return uint256.NewInt(0)
 }
 
 func (t *TxnState) GetNonce(addr common.Address) uint64 {
-	if value, ok := t.writeSet.Get(NonceKey(addr)); ok {
+	if value, err := t.read(NonceKey(addr)); err == nil {
 		if nonce, ok := value.Nonce(); ok {
 			return nonce
 		}
 	}
-	t.readSet[NonceKey(addr)] = struct{}{}
-	if t.base == nil {
-		return 0
-	}
-	return t.base.GetNonce(addr)
+	return 0
 }
 
 func (t *TxnState) SetNonce(addr common.Address, nonce uint64) {
@@ -187,47 +128,34 @@ func (t *TxnState) SetNonce(addr common.Address, nonce uint64) {
 }
 
 func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
-	if value, ok := t.writeSet.Get(CodeKey(addr)); ok {
-		if code, ok := value.Code(); ok {
-			return crypto.Keccak256Hash(code)
+	if value, err := t.read(CodeHashKey(addr)); err == nil {
+		if codeHash, ok := value.CodeHash(); ok {
+			return codeHash
 		}
 	}
-	t.readSet[CodeKey(addr)] = struct{}{}
-	if t.base == nil {
-		return common.Hash{}
-	}
-	return t.base.GetCodeHash(addr)
+	return common.Hash{}
 }
 
 func (t *TxnState) GetCode(addr common.Address) []byte {
-	if value, ok := t.writeSet.Get(CodeKey(addr)); ok {
+	if value, err := t.read(CodeKey(addr)); err == nil {
 		if code, ok := value.Code(); ok {
 			return code
 		}
 	}
-	t.readSet[CodeKey(addr)] = struct{}{}
-	if t.base == nil {
-		return nil
-	}
-	return cloneBytes(t.base.GetCode(addr))
+	return nil
 }
 
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
-	codeCopy := cloneBytes(code)
-	t.writeSet.Set(CodeKey(addr), NewCodeValue(codeCopy))
+	t.writeSet.Set(CodeKey(addr), NewCodeValue(code))
 }
 
 func (t *TxnState) GetCodeSize(addr common.Address) int {
-	if value, ok := t.writeSet.Get(CodeKey(addr)); ok {
+	if value, err := t.read(CodeKey(addr)); err == nil {
 		if code, ok := value.Code(); ok {
 			return len(code)
 		}
 	}
-	t.readSet[CodeKey(addr)] = struct{}{}
-	if t.base == nil {
-		return 0
-	}
-	return t.base.GetCodeSize(addr)
+	return 0
 }
 
 func (t *TxnState) AddRefund(gas uint64) {
@@ -246,148 +174,138 @@ func (t *TxnState) GetRefund() uint64 {
 }
 
 func (t *TxnState) GetCommittedState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	if value, ok := t.writeSet.Get(StorageKey(addr, key)); ok {
-		if storageValue, ok := value.Storage(); ok {
-			return storageValue
-		}
+	// Committed state does not change during block execution - we skip any bookkeeping
+	if value, err := t.base.GetCommittedState(StorageKey(addr, key)); err == nil {
+		return value
 	}
-	t.readSet[StorageKey(addr, key)] = struct{}{}
-	if t.base == nil {
-		return common.Hash{}
-	}
-	return t.base.GetCommittedState(addr, key)
+	return common.Hash{}
 }
 
 func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	if value, ok := t.writeSet.Get(StorageKey(addr, key)); ok {
+	if value, err := t.read(StorageKey(addr, key)); err == nil {
 		if storageValue, ok := value.Storage(); ok {
 			return storageValue
 		}
 	}
-	t.readSet[StorageKey(addr, key)] = struct{}{}
-	if t.base == nil {
-		return common.Hash{}
-	}
-	return t.base.GetState(addr, key)
+	return common.Hash{}
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, _ ...stateconf.StateDBStateOption) {
 	t.writeSet.Set(StorageKey(addr, key), NewStorageValue(value))
 }
 
+// Transient state are local to transaction and not tracked in read/write sets.
 func (t *TxnState) GetTransientState(addr common.Address, key common.Hash) common.Hash {
-	if slots, ok := t.transient[addr]; ok {
-		if value, ok := slots[key]; ok {
-			return value
-		}
-	}
-	return common.Hash{}
+	return t.transient.Get(addr, key)
 }
 
 func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash) {
-	if _, ok := t.transient[addr]; !ok {
-		t.transient[addr] = make(map[common.Hash]common.Hash)
-	}
-	t.transient[addr][key] = value
+	t.transient.Set(addr, key, value)
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
-	t.lifecycle[addr] = lifecycleSelfDestructLegacy
 }
 
 func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
-	if op, ok := t.lifecycle[addr]; ok {
-		return op == lifecycleSelfDestructLegacy || op == lifecycleSelfDestructEIP6780
+	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
+		return op == lifecycleSelfDestructed
 	}
-	if t.base == nil {
-		return false
-	}
-	return t.base.HasSelfDestructed(addr)
+	return false // accounts that do not exist in the first place are not considered self-destructed
 }
 
+// call SelfDestruct only if the txn is created in the current transaction
 func (t *TxnState) Selfdestruct6780(addr common.Address) {
-	t.lifecycle[addr] = lifecycleSelfDestructEIP6780
+	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
+		if op == lifecycleCreated {
+			t.writeSet.accountLifecycleChanges[addr] = lifecycleSelfDestructed
+		}
+	}
 }
 
 func (t *TxnState) Exist(addr common.Address) bool {
-	if op, ok := t.lifecycle[addr]; ok {
+	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
 		if op == lifecycleCreated {
 			return true
 		}
-		// Mirrors StateDB behavior where suicided objects can still be considered existing until finalization.
-		return true
+		// a self-destructed account is considered existing until the end of block execution - we should query BlockState if the account exists
 	}
-	if t.base == nil {
+	exists, version, err := t.base.Exists(addr)
+	if err != nil {
 		return false
 	}
-	return t.base.Exist(addr)
+	if t.readSet.RecordAccountExistence(addr, version) != nil {
+		// existence read inconsistent with previous read - early terminate
+		return false
+	}
+	return exists
 }
 
 func (t *TxnState) Empty(addr common.Address) bool {
-	// If tx wrote any field, compute emptiness from local view.
-	if _, ok := t.writeSet.Get(BalanceKey(addr)); ok {
-		return t.GetBalance(addr).IsZero() && t.GetNonce(addr) == 0 && len(t.GetCode(addr)) == 0
-	}
-	if _, ok := t.writeSet.Get(NonceKey(addr)); ok {
-		return t.GetBalance(addr).IsZero() && t.GetNonce(addr) == 0 && len(t.GetCode(addr)) == 0
-	}
-	if _, ok := t.writeSet.Get(CodeKey(addr)); ok {
-		return t.GetBalance(addr).IsZero() && t.GetNonce(addr) == 0 && len(t.GetCode(addr)) == 0
-	}
-	if t.base == nil {
+	if !t.Exist(addr) {
 		return true
 	}
-	return t.base.Empty(addr)
+	// 1. check if the balance is zero
+	if !t.GetBalance(addr).IsZero() {
+		return false
+	}
+	// 2. check if the nonce is zero
+	if t.GetNonce(addr) != 0 {
+		return false
+	}
+	// 3. check if the code hash is empty
+	if bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
+		return false
+	}
+	// 4. check if extra is empty
+	if extra := t.GetExtra(addr); extra != nil && !extra.IsZero() {
+		return false
+	}
+	return true
 }
 
+// access list is per-transaction and not tracked in read/write sets.
 func (t *TxnState) AddressInAccessList(addr common.Address) bool {
-	_, ok := t.accessA[addr]
-	return ok
+	return t.accessList.ContainsAddress(addr)
 }
 
 func (t *TxnState) SlotInAccessList(addr common.Address, slot common.Hash) (bool, bool) {
-	_, addrOK := t.accessA[addr]
-	if !addrOK {
-		return false, false
-	}
-	if slots, ok := t.accessS[addr]; ok {
-		_, slotOK := slots[slot]
-		return true, slotOK
-	}
-	return true, false
+	return t.accessList.Contains(addr, slot)
 }
 
 func (t *TxnState) AddAddressToAccessList(addr common.Address) {
-	t.accessA[addr] = struct{}{}
+	t.accessList.AddAddress(addr)
 }
 
 func (t *TxnState) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	t.AddAddressToAccessList(addr)
-	if _, ok := t.accessS[addr]; !ok {
-		t.accessS[addr] = make(map[common.Hash]struct{})
-	}
-	t.accessS[addr][slot] = struct{}{}
+	t.accessList.AddSlot(addr, slot)
 }
 
-func (t *TxnState) Prepare(_ params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
-	// Reset tx-local access list and prime it with tx inputs.
-	t.accessA = make(map[common.Address]struct{})
-	t.accessS = make(map[common.Address]map[common.Hash]struct{})
+func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
+	if rules.IsBerlin {
+		// Clear out any leftover from previous executions
+		al := state.NewAccessList()
+		t.accessList = al
 
-	t.AddAddressToAccessList(sender)
-	t.AddAddressToAccessList(coinbase)
-	if dest != nil {
-		t.AddAddressToAccessList(*dest)
-	}
-	for _, precompile := range precompiles {
-		t.AddAddressToAccessList(precompile)
-	}
-	for _, tuple := range txAccesses {
-		t.AddAddressToAccessList(tuple.Address)
-		for _, slot := range tuple.StorageKeys {
-			t.AddSlotToAccessList(tuple.Address, slot)
+		al.AddAddress(sender)
+		if dst != nil {
+			al.AddAddress(*dst)
+			// If it's a create-tx, the destination will be added inside evm.create
+		}
+		for _, addr := range precompiles {
+			al.AddAddress(addr)
+		}
+		for _, el := range list {
+			al.AddAddress(el.Address)
+			for _, key := range el.StorageKeys {
+				al.AddSlot(el.Address, key)
+			}
+		}
+		if rules.IsShanghai { // EIP-3651: warm coinbase
+			al.AddAddress(coinbase)
 		}
 	}
+	// Reset transient storage at the beginning of transaction execution
+	t.transient = state.NewTransientStorage()
 }
 
 func (t *TxnState) RevertToSnapshot(_ int) {
@@ -400,11 +318,10 @@ func (t *TxnState) Snapshot() int {
 }
 
 func (t *TxnState) AddLog(log *types.Log) {
-	logCopy := *log
-	logCopy.TxHash = t.txHash
-	logCopy.TxIndex = uint(t.txIndex)
-	logCopy.Index = t.logSize
-	t.logs = append(t.logs, &logCopy)
+	log.TxHash = t.txHash
+	log.TxIndex = uint(t.txIndex)
+	log.Index = t.logSize
+	t.logs = append(t.logs, log)
 	t.logSize++
 }
 
@@ -417,9 +334,11 @@ func (t *TxnState) AddPreimage(hash common.Hash, preimage []byte) {
 	t.preimage[hash] = copyPreimage
 }
 
+// called only when finalizing a transaction - and only on the txn itself
+// TxnState can track its own logs and avoid writing back to BlockState - no synchronization needed
 func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log {
 	if hash != t.txHash {
-		return t.base.GetLogs(hash, blockNumber, blockHash)
+		return nil
 	}
 	out := make([]*types.Log, len(t.logs))
 	for i, entry := range t.logs {
@@ -431,12 +350,14 @@ func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash commo
 	return out
 }
 
+// used exclusively for testing
 func (t *TxnState) Logs() []*types.Log {
 	out := make([]*types.Log, len(t.logs))
 	copy(out, t.logs)
 	return out
 }
 
+// called only when writing a block back - so preimages won't have read-write conflicts.
 func (t *TxnState) Preimages() map[common.Hash][]byte {
 	out := make(map[common.Hash][]byte, len(t.preimage))
 	for hash, image := range t.preimage {
@@ -448,25 +369,58 @@ func (t *TxnState) Preimages() map[common.Hash][]byte {
 }
 
 func (t *TxnState) GetExtra(addr common.Address) *types.StateAccountExtra {
-	if value, ok := t.writeSet.Get(ExtraKey(addr)); ok {
+	if value, err := t.read(ExtraKey(addr)); err == nil {
 		if extra, ok := value.Extra(); ok {
 			return extra
 		}
 	}
-	t.readSet[ExtraKey(addr)] = struct{}{}
-	if t.base == nil {
-		return nil
-	}
-	return t.base.GetExtra(addr)
+	return nil
 }
 
 func (t *TxnState) SetExtra(addr common.Address, extra *types.StateAccountExtra) {
 	t.writeSet.Set(ExtraKey(addr), NewExtraValue(extra))
 }
 
+// For testing purposes - in the common case, BlockState will write changes back to database
 func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
 	if err := t.finalise(); err != nil {
 		return common.Hash{}, err
 	}
 	return t.base.Commit(block, deleteEmptyObjects, opts...)
+}
+
+func (t *TxnState) readFromBase(key StateObjectKey) (VersionedValue, bool) {
+	if t.base == nil {
+		return VersionedValue{}, false
+	}
+	vv, err := t.base.Read(key, uint64(t.txIndex))
+	if err != nil {
+		return VersionedValue{}, false
+	}
+	if oldVersion, exists := t.readSet.objectVersions[key]; exists {
+		if vv.Version != oldVersion {
+			// read inconsistent with previous read - early terminate
+			return VersionedValue{}, false
+		}
+	} else {
+		// first time reading this key - track version for future consistency checks
+		t.readSet.objectVersions[key] = vv.Version
+	}
+	return vv, true
+}
+
+// TODO: we need to change StateDB interface so that we can propagate mismatching state reads up to the EVM execution for early termination.
+// For now we just keep the first read version so that it will fail the validation check
+func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
+	if value, ok := t.writeSet.Get(key); ok {
+		return &value, nil
+	}
+	versionedValue, ok := t.readFromBase(key)
+	if !ok {
+		return nil, fmt.Errorf("key not found in base state: %v", key)
+	}
+	if oldVersion := t.readSet.RecordObjectVersion(key, versionedValue.Version); oldVersion != nil {
+		return &versionedValue.Value, fmt.Errorf("read version mismatch for key %v: previous version %d, current version %d", key, *oldVersion, versionedValue.Version)
+	}
+	return &versionedValue.Value, nil
 }

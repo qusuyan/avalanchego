@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-13
+Last updated: 2026-02-18
 
 ## Scope
 
@@ -10,7 +10,48 @@ This document summarizes:
 2. The agreed target direction for parallel transaction execution.
 3. Key constraints and open decisions to pick up later.
 
+## Progress Update (2026-02-18)
+
+### Completed Since Last Update
+
+1. Added a concrete `BlockState` contract and `StateDBBlockState` adapter in `graft/coreth/core/block_state.go`.
+2. `TxnState` now depends on `BlockState` (not `*state.StateDB`) and commits through:
+- `ApplyWriteSet(txIndex, *TxWriteSet)`
+- `Commit(...)` delegation for test-only paths
+3. Added versioned read plumbing and typed tracking structures in `graft/coreth/core/parallel_state_types.go`:
+- `ObjectVersion`, `VersionedValue`
+- `TxReadSet` (`accountExistsVersion`, `objectVersions`)
+- `TxWriteSet` split into account lifecycle changes + object writes
+4. Added explicit object key for code hash (`StateObjectCodeHash` / `CodeHashKey`) and typed value accessors (`CodeHash()`).
+5. `state_processor` parallel-enabled path now instantiates:
+- `NewTxnState(NewStateDBBlockState(statedb), tx.Hash(), i)`
+6. `TxnState` was aligned closer to libevm semantics for tx-local bookkeeping:
+- `state.AccessList` and `state.TransientStorage` are used directly
+- `Prepare(...)` now applies Berlin/Shanghai warming rules and resets transient storage
+- `GetLogs(...)` is tx-local only (non-matching tx hash returns `nil`)
+7. `TxnState` read path now captures observed versions from `BlockState.Read(...)` and stores them in `TxReadSet` for later validation.
+
+### Current Status
+
+1. Wiring is in place for `TxnState -> BlockState.Read/ApplyWriteSet/Exists/GetCommittedState`.
+2. `StateDBBlockState` currently uses placeholder versions (`COMMITTED_VERSION` / `ERROR_VERSION`) and `ValidateReadSet(...)` is still a stub that returns `true`.
+3. Account lifecycle is now represented in `TxWriteSet.accountLifecycleChanges`, and applied in the adapter during `ApplyWriteSet(...)`.
+4. `TxnState.Validate()` remains a phase placeholder (`true`) and is not yet connected to coordinator-driven read-set validation.
+
+### Next Work Items
+
+1. Replace placeholder `StateDBBlockState` versioning with real per-object versions and conflict detection.
+2. Implement `ValidateReadSet(*TxReadSet)` against canonical current versions.
+3. Complete lifecycle semantics parity (`SelfDestruct`, EIP-6780 behavior, `Empty`/`Exist` edge cases) under tx-local overlay + canonical apply.
+4. Add focused tests for:
+- read version consistency capture and mismatch behavior
+- account existence version tracking
+- ordered `ApplyWriteSet` lifecycle + value writes
+- conflict detection via `ValidateReadSet`
+5. Move from serial-in-order speculative wiring to scheduler-managed parallel run/validate/commit.
+
 ## Current Serial Execution Path
+
 
 1. Block insertion entry point:
 - `graft/coreth/core/blockchain.go:1329` (`insertBlock`)
@@ -21,7 +62,7 @@ This document summarizes:
 - `graft/coreth/core/state_processor.go:71` (`Process`)
 - Creates one EVM context for the block.
 - Iterates txs strictly in order.
-- Per tx: `TransactionToMessage` -> `NewTxnState(statedb, txHash, txIndex)` ->
+- Per tx: `TransactionToMessage` -> `NewTxnState(NewStateDBBlockState(statedb), txHash, txIndex)` ->
   `applyTransaction(..., txState, ...)` -> `txState.finalise()`.
 
 3. Transaction application (current WIP integration):
@@ -69,8 +110,8 @@ User requirement: do not switch to sequential path when conflicts are high.
 ## Expected Components
 
 1. Tx-local execution artifacts:
-- `ReadSet`
-- `WriteSet`
+- `TxReadSet`
+- `TxWriteSet`
 - `TxExecResult` (status, logs, gas, error, rw-sets)
 
 2. Coordinator/scheduler:
@@ -81,8 +122,8 @@ User requirement: do not switch to sequential path when conflicts are high.
 3. State versioning for conflict checks:
 - Per-key version tracking in canonical state view.
 
-Note: for Phase 1 implementation, `TxnState` wraps `*state.StateDB` directly and does
-not use block-level version tracking yet.
+Note: current implementation uses `StateDBBlockState` as a compatibility adapter, so
+`TxnState` already depends on `BlockState`, but version validation is still placeholder.
 
 ## State Object Versioning Rules (Planned for BlockState Phase)
 
@@ -95,11 +136,13 @@ When `BlockState` is introduced, track versions at fine granularity.
 2. Object granularity for conflict detection:
 - `Balance(addr)`
 - `Nonce(addr)`
+- `CodeHash(addr)`
 - `Code(addr)`
 - `Storage(addr, slot)` for each distinct storage key
+- `Extra(addr)` for account extra metadata
+- account existence version for `Exist(addr)`/`Empty(addr)` checks
 
 3. Derived object coupling:
-- `CodeHash(addr)` is derived from `Code(addr)` and changes whenever code changes, so it does not need a separate tracked object key.
 - `CodeSize(addr)` is derived as `len(Code(addr))`, so it does not need a separate tracked object key.
 - `StateRoot(addr)` is coupled to storage and changes whenever any `Storage(addr, slot)` changes, but it is not tracked as a separate tx-local object key in the current EVM execution path.
 
@@ -163,7 +206,7 @@ Acceptance criteria:
 Goal: introduce per-tx read/write tracking without replacing canonical storage yet.
 
 1. Implement `TxnState`:
-- Wraps canonical `*state.StateDB` reference directly.
+- Wraps canonical state through `BlockState` (currently `StateDBBlockState` adapter over `*state.StateDB`).
 - Maintains tx-local read set and write set.
 - Read path: `write-set first`, then canonical read.
 - Write/delete path: update write set only.
@@ -247,146 +290,93 @@ Goal: safe activation and observability.
 ### Shared Types
 
 ```go
-type ObjectKind uint8
+type StateObjectKind uint8
 
 const (
-    ObjBalance ObjectKind = iota + 1
-    ObjNonce
-    ObjCode
-    ObjStorage
-    ObjSuicided
-    ObjExist
-    ObjEmpty
+    StateObjectBalance StateObjectKind = iota + 1
+    StateObjectNonce
+    StateObjectCodeHash
+    StateObjectCode
+    StateObjectStorage
+    StateObjectExtra
 )
 
-type ObjectKey struct {
-    Kind    ObjectKind
+type StateObjectKey struct {
+    Kind    StateObjectKind
     Address common.Address
-    Slot    common.Hash // only for ObjStorage
+    Slot    common.Hash // only used for storage
 }
 
-type ObjectVersion struct {
-    LastWriterTx uint64
-    IsBaseline   bool
-}
+type ObjectVersion = uint64
+
+const (
+    COMMITTED_VERSION ObjectVersion = 0
+    ERROR_VERSION     ObjectVersion = ^uint64(0)
+)
 
 type VersionedValue struct {
-    Value   []byte        // canonical encoded value for key
-    Version ObjectVersion // version of key at read time
+    Value   StateObjectValue
+    Version ObjectVersion
 }
 
-type ReadSet map[ObjectKey]ObjectVersion
-type WriteSet map[ObjectKey]WriteOp
+type TxReadSet struct {
+    accountExistsVersion map[common.Address]ObjectVersion
+    objectVersions       map[StateObjectKey]ObjectVersion
+}
 
-type WriteOp struct {
-    Delete bool
-    Value  []byte // nil when Delete=true
+type TxWriteSet struct {
+    accountLifecycleChanges map[common.Address]AccountLifecycle
+    writes                  map[StateObjectKey]StateObjectValue
 }
 ```
 
 ### BlockState
 
-`BlockState` is the canonical block-level state owner. It does not expose plain typed reads.
-
 ```go
 type BlockState interface {
-    StartPrefetcher(namespace string, opts ...PrefetcherOption)
-    StopPrefetcher()
-    Error() error
-
-    // Generic versioned canonical read (planned for BlockState phase).
-    Read(key ObjectKey) (VersionedValue, error)
-
-    // Ordered deterministic apply path from tx write-set.
-    ApplyWriteSet(txIndex uint64, ws WriteSet) error
-    ValidateReadSet(rs ReadSet) bool
-
-    // Block-level finalize and persistent commit.
-    Finalise(deleteEmptyObjects bool)
-    Commit(blockNumber uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
+    Exists(addr common.Address) (bool, ObjectVersion, error)
+    Read(key StateObjectKey, txIndex uint64) (VersionedValue, error)
+    GetCommittedState(key StateObjectKey) (common.Hash, error)
+    ApplyWriteSet(txIndex uint64, ws *TxWriteSet) error
+    ValidateReadSet(rs *TxReadSet) bool
+    Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 }
 ```
 
 ### TxnState
 
-`TxnState` remains EVM-compatible with `Get*/Set*` style APIs.
+`TxnState` remains `vm.StateDB` compatible, with tx-local overlay behavior:
 
-Read semantics for every `Get*`:
-1. check tx-local `WriteSet`
-2. if absent, read from wrapped canonical state (`*state.StateDB` in phase 1,
-   `BlockState.Read(ObjectKey)` in later phase)
-3. decode value and return typed value
-
-Write semantics for every `Set*`/delete:
-1. encode and store in tx-local `WriteSet`
-2. do not mutate wrapped canonical state until `Commit()`
-
-```go
-type TxnState interface {
-    // Tx lifecycle
-    TxHash() common.Hash
-    TxIndex() int
-    Commit() error
-    Validate() bool
-
-    // EVM compatibility surface (full vm.StateDB compatibility target)
-    CreateAccount(addr common.Address)
-
-    GetBalance(addr common.Address) *uint256.Int
-    SetBalance(addr common.Address, value *uint256.Int)
-    AddBalance(addr common.Address, amount *uint256.Int)
-    SubBalance(addr common.Address, amount *uint256.Int)
-
-    GetNonce(addr common.Address) uint64
-    SetNonce(addr common.Address, nonce uint64)
-
-    GetCode(addr common.Address) []byte
-    SetCode(addr common.Address, code []byte)
-    GetCodeHash(addr common.Address) common.Hash
-    GetCodeSize(addr common.Address) int
-
-    GetState(addr common.Address, slot common.Hash, opts ...stateconf.StateDBStateOption) common.Hash
-    SetState(addr common.Address, slot common.Hash, value common.Hash, opts ...stateconf.StateDBStateOption)
-    GetCommittedState(addr common.Address, slot common.Hash, opts ...stateconf.StateDBStateOption) common.Hash
-
-    // Both names listed for design clarity; vm.StateDB currently uses Selfdestruct6780.
-    SelfDestruct(addr common.Address)
-    Selfdestruct6780(addr common.Address)
-    SelfDestruct6780(addr common.Address) // optional alias for internal consistency
-    HasSelfDestructed(addr common.Address) bool
-    Exist(addr common.Address) bool
-    Empty(addr common.Address) bool
-
-    GetTransientState(addr common.Address, key common.Hash) common.Hash
-    SetTransientState(addr common.Address, key, value common.Hash)
-
-    AddressInAccessList(addr common.Address) bool
-    SlotInAccessList(addr common.Address, slot common.Hash) (addressOk bool, slotOk bool)
-    AddAddressToAccessList(addr common.Address)
-    AddSlotToAccessList(addr common.Address, slot common.Hash)
-    Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList)
-
-    AddLog(log *types.Log)
-    GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log
-    AddPreimage(hash common.Hash, preimage []byte)
-    Preimages() map[common.Hash][]byte
-
-    AddRefund(gas uint64)
-    SubRefund(gas uint64)
-    GetRefund() uint64
-}
-```
+1. Read path: check tx-local writes first, then `BlockState.Read(...)`.
+2. Write path: mutate only tx-local `TxWriteSet` until finalize/commit.
+3. Finalize path: call `BlockState.ApplyWriteSet(txIndex, writeSet)` in deterministic tx order.
+4. Validation path: currently placeholder (`Validate() == true`), with read versions already collected in `TxReadSet`.
 
 Notes:
-1. `TxnState` intentionally has no trie `IntermediateRoot()` for parallel receipts.
-2. Storage-level `Commit()` is block-level only via `BlockState.Commit(...)`.
-3. Derived key coupling remains: `CodeHash` and `CodeSize` are derived from `Code`; storage-root coupling remains an underlying state invariant but is not separately tracked in tx-local keys.
-4. When compiling against `vm.StateDB`, keep exact method names/signatures from `../libevm/core/vm/interface.go`.
-5. `Snapshot()`/`RevertToSnapshot()` are intentionally omitted in this design; tx failure or conflict discards the current `TxnState` and schedules another `run` attempt with a fresh `TxnState`.
-6. Tx context is immutable and initialized when creating `TxnState` (for example `NewTxnState(blockState, txHash, txIndex, ...)`); no `SetTxContext` mutator is needed.
-7. Internal read/write sets are not exposed as public API. `Validate()` and `Commit()` are the only external coordination hooks required.
+1. Access list and transient storage are transaction-local and reset in `Prepare(...)`.
+2. Logs and preimages are tracked tx-locally.
+3. `GetCommittedState(...)` goes through `BlockState.GetCommittedState(...)`.
+4. `Snapshot()`/`RevertToSnapshot()` remain no-op/discard semantics in this model.
 
 ## Progress Log
+
+### 2026-02-18
+
+Implemented:
+
+1. Introduced `BlockState` + `StateDBBlockState` adapter in `graft/coreth/core/block_state.go` and switched `TxnState` constructor to consume `BlockState`.
+2. Split tx-local state tracking into `TxWriteSet` (lifecycle + writes) and `TxReadSet` (account existence + object version tracking) in `graft/coreth/core/parallel_state_types.go`.
+3. Added `StateObjectCodeHash`/`CodeHashKey` support and versioned value transport (`VersionedValue`) for typed reads.
+4. Updated `TxnState` read path to use `BlockState.Read(...)` and record observed versions for future validation integration.
+5. Switched tx-local access-list/transient handling to `state.AccessList` and `state.TransientStorage` with `Prepare(...)` reset semantics.
+6. Updated processor wiring to create tx overlays via `NewTxnState(NewStateDBBlockState(statedb), txHash, txIndex)` before speculative apply/finalize.
+7. Added and adjusted tests for write-first read behavior and read-set structure assumptions in `graft/coreth/core/txn_state_test.go`.
+
+Notes:
+
+1. `StateDBBlockState.ValidateReadSet(...)` is still a stub and object versions are currently placeholder constants.
+2. Full-suite verification was not rerun in this session.
+
 
 ### 2026-02-10
 

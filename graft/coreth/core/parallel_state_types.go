@@ -15,6 +15,7 @@ type StateObjectKind uint8
 const (
 	StateObjectBalance StateObjectKind = iota + 1
 	StateObjectNonce
+	StateObjectCodeHash
 	StateObjectCode
 	StateObjectStorage
 	StateObjectExtra
@@ -39,6 +40,10 @@ func CodeKey(addr common.Address) StateObjectKey {
 	return StateObjectKey{Kind: StateObjectCode, Address: addr}
 }
 
+func CodeHashKey(addr common.Address) StateObjectKey {
+	return StateObjectKey{Kind: StateObjectCodeHash, Address: addr}
+}
+
 func StorageKey(addr common.Address, slot common.Hash) StateObjectKey {
 	return StateObjectKey{Kind: StateObjectStorage, Address: addr, Slot: slot}
 }
@@ -49,11 +54,22 @@ func ExtraKey(addr common.Address) StateObjectKey {
 
 // StateObjectValue stores the new value written for a state object.
 type StateObjectValue struct {
-	balance *uint256.Int
-	nonce   *uint64
-	code    []byte
-	storage *common.Hash
-	extra   *types.StateAccountExtra
+	balance  *uint256.Int
+	nonce    *uint64
+	codeHash *common.Hash
+	code     []byte
+	storage  *common.Hash
+	extra    *types.StateAccountExtra
+}
+
+type ObjectVersion = uint64
+
+const COMMITTED_VERSION ObjectVersion = 0
+const ERROR_VERSION ObjectVersion = ^uint64(0) // Max uint64 to represent an error state.
+
+type VersionedValue struct {
+	Value   StateObjectValue
+	Version ObjectVersion
 }
 
 func NewBalanceValue(value *uint256.Int) StateObjectValue {
@@ -62,6 +78,11 @@ func NewBalanceValue(value *uint256.Int) StateObjectValue {
 
 func NewNonceValue(value uint64) StateObjectValue {
 	return StateObjectValue{nonce: &value}
+}
+
+func NewCodeHashValue(value common.Hash) StateObjectValue {
+	v := value
+	return StateObjectValue{codeHash: &v}
 }
 
 func NewCodeValue(value []byte) StateObjectValue {
@@ -91,6 +112,13 @@ func (v StateObjectValue) Nonce() (uint64, bool) {
 	return *v.nonce, true
 }
 
+func (v StateObjectValue) CodeHash() (common.Hash, bool) {
+	if v.codeHash == nil {
+		return common.Hash{}, false
+	}
+	return *v.codeHash, true
+}
+
 func (v StateObjectValue) Code() ([]byte, bool) {
 	if v.code == nil {
 		return nil, false
@@ -112,43 +140,113 @@ func (v StateObjectValue) Extra() (*types.StateAccountExtra, bool) {
 	return v.extra, true
 }
 
+type AccountLifecycle uint8
+
+const (
+	lifecycleCreated AccountLifecycle = iota + 1
+	lifecycleSelfDestructed
+)
+
 // TxWriteSet captures keys mutated during a tx run and their new values.
 type TxWriteSet struct {
-	entries map[StateObjectKey]StateObjectValue
+	accountLifecycleChanges map[common.Address]AccountLifecycle
+	writes                  map[StateObjectKey]StateObjectValue
 }
 
 func NewTxWriteSet() *TxWriteSet {
-	return &TxWriteSet{entries: make(map[StateObjectKey]StateObjectValue)}
+	return &TxWriteSet{
+		accountLifecycleChanges: make(map[common.Address]AccountLifecycle),
+		writes:                  make(map[StateObjectKey]StateObjectValue),
+	}
 }
 
 // Add tracks that a key was written. Prefer Set for writes with value.
-func (w *TxWriteSet) Add(key StateObjectKey) {
-	if w.entries == nil {
-		w.entries = make(map[StateObjectKey]StateObjectValue)
+func (w *TxWriteSet) CreateAccount(addr common.Address) {
+	if w.accountLifecycleChanges == nil {
+		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
 	}
-	if _, exists := w.entries[key]; !exists {
-		w.entries[key] = StateObjectValue{}
+	w.accountLifecycleChanges[addr] = lifecycleCreated
+}
+
+func (w *TxWriteSet) DeleteAccount(addr common.Address) {
+	if w.accountLifecycleChanges == nil {
+		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
+	}
+	// Note: even if the account was created in the same transaction, we still want to mark it as self-destructed,
+	// since CreateAccount can be called on an address with a non-empty account.
+	w.accountLifecycleChanges[addr] = lifecycleSelfDestructed
+}
+
+func (w *TxWriteSet) DeleteAccount6780(addr common.Address) {
+	if w.accountLifecycleChanges == nil {
+		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
+	}
+	// Only mark as self-destructed if the account was created in the same transaction.
+	if op, ok := w.accountLifecycleChanges[addr]; ok && op == lifecycleCreated {
+		w.accountLifecycleChanges[addr] = lifecycleSelfDestructed
 	}
 }
 
 func (w *TxWriteSet) Set(key StateObjectKey, value StateObjectValue) {
-	if w.entries == nil {
-		w.entries = make(map[StateObjectKey]StateObjectValue)
+	if w.writes == nil {
+		w.writes = make(map[StateObjectKey]StateObjectValue)
 	}
-	w.entries[key] = value
+	w.writes[key] = value
 }
 
 func (w *TxWriteSet) Get(key StateObjectKey) (StateObjectValue, bool) {
-	value, ok := w.entries[key]
+	value, ok := w.writes[key]
 	return value, ok
 }
 
 func (w *TxWriteSet) Entries() map[StateObjectKey]StateObjectValue {
-	out := make(map[StateObjectKey]StateObjectValue, len(w.entries))
-	for key, value := range w.entries {
+	out := make(map[StateObjectKey]StateObjectValue, len(w.writes))
+	for key, value := range w.writes {
 		out[key] = value
 	}
 	return out
+}
+
+type TxReadSet struct {
+	accountExistsVersion map[common.Address]ObjectVersion
+	objectVersions       map[StateObjectKey]ObjectVersion
+}
+
+func NewTxReadSet() *TxReadSet {
+	return &TxReadSet{
+		accountExistsVersion: make(map[common.Address]ObjectVersion),
+		objectVersions:       make(map[StateObjectKey]ObjectVersion),
+	}
+}
+
+// Insert the version for the given address and return the previous version if it exists and is different from the new version.
+func (r *TxReadSet) RecordAccountExistence(addr common.Address, version ObjectVersion) *ObjectVersion {
+	if r.accountExistsVersion == nil {
+		r.accountExistsVersion = make(map[common.Address]ObjectVersion)
+	}
+	if prevVersion, exists := r.accountExistsVersion[addr]; exists {
+		if prevVersion != version {
+			return &prevVersion
+		}
+	} else {
+		r.accountExistsVersion[addr] = version
+	}
+	return nil
+}
+
+// Insert the version for the given key and return the previous version if it exists and is different from the new version.
+func (r *TxReadSet) RecordObjectVersion(key StateObjectKey, version ObjectVersion) *ObjectVersion {
+	if r.objectVersions == nil {
+		r.objectVersions = make(map[StateObjectKey]ObjectVersion)
+	}
+	if prevVersion, exists := r.objectVersions[key]; exists {
+		if prevVersion != version {
+			return &prevVersion
+		}
+	} else {
+		r.objectVersions[key] = version
+	}
+	return nil
 }
 
 func cloneBytes(value []byte) []byte {

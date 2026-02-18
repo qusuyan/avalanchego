@@ -105,13 +105,14 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		}
 		var receipt *types.Receipt
 		if parallelEnabled {
-			txState := NewTxnState(statedb, tx.Hash(), i)
+			txState := NewTxnState(NewStateDBBlockState(statedb), tx.Hash(), i)
 			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
-			txState.Finalise(true) // write changes in TxnState back
-			continue
+			if err := txState.finalise(); err != nil {
+				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
 		} else {
 			statedb.SetTxContext(tx.Hash(), i)
 			receipt, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)

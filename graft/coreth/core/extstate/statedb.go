@@ -52,6 +52,7 @@ type Backend interface {
 	vm.StateDB
 	state.StateDBExt
 
+	// These functions are added exclusively for testing purposes.
 	Logs() []*types.Log
 	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 	Finalise(deleteEmptyObjects bool)
