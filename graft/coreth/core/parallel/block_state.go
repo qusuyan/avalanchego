@@ -1,6 +1,3 @@
-// Copyright (C) 2026, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
 package parallel
 
 import (
@@ -16,7 +13,7 @@ import (
 // It exposes versioned reads and deterministic write-set application.
 type BlockState interface {
 	Exists(addr common.Address) (bool, ObjectVersion, error)
-	Read(key StateObjectKey, txIndex uint64) (VersionedValue, error)
+	Read(key StateObjectKey, txIndex uint64) (*VersionedValue, error)
 	GetCommittedState(key StateObjectKey) (common.Hash, error)
 	Logs() []*types.Log
 	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
@@ -26,18 +23,18 @@ type BlockState interface {
 	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 }
 
-// StateDBBlockState adapts state.StateDB to BlockState for phase-2 wiring.
+// SequentialBlockState adapts state.StateDB to BlockState for phase-2 wiring.
 // This is a placeholder implementation that treats all reads as committed and does not perform any validation,
 // but it allows us to wire up the TxnState and test the plumbing of speculative execution.
-type StateDBBlockState struct {
+type SequentialBlockState struct {
 	base *state.StateDB
 }
 
-func NewStateDBBlockState(base *state.StateDB) *StateDBBlockState {
-	return &StateDBBlockState{base: base}
+func NewSequentialBlockState(base *state.StateDB) *SequentialBlockState {
+	return &SequentialBlockState{base: base}
 }
 
-func (b *StateDBBlockState) Exists(addr common.Address) (bool, ObjectVersion, error) {
+func (b *SequentialBlockState) Exists(addr common.Address) (bool, ObjectVersion, error) {
 	if b == nil || b.base == nil {
 		return false, ERROR_VERSION, nil
 	}
@@ -45,47 +42,47 @@ func (b *StateDBBlockState) Exists(addr common.Address) (bool, ObjectVersion, er
 	return exists, COMMITTED_VERSION, nil
 }
 
-func (b *StateDBBlockState) Read(key StateObjectKey, _ uint64) (VersionedValue, error) {
+func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
 	if b == nil || b.base == nil {
-		return VersionedValue{}, fmt.Errorf("nil base state")
+		return nil, fmt.Errorf("nil base state")
 	}
 	switch key.Kind {
 	case StateObjectBalance:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewBalanceValue(b.base.GetBalance(key.Address)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectNonce:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewNonceValue(b.base.GetNonce(key.Address)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectCodeHash:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewCodeHashValue(b.base.GetCodeHash(key.Address)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectCode:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewCodeValue(b.base.GetCode(key.Address)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectStorage:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewStorageValue(b.base.GetState(key.Address, key.Slot)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectExtra:
-		return VersionedValue{
+		return &VersionedValue{
 			Value:   NewExtraValue(b.base.GetExtra(key.Address)),
 			Version: 0,
 		}, nil
 	default:
-		return VersionedValue{}, fmt.Errorf("unknown state object kind: %d", key.Kind)
+		return nil, fmt.Errorf("unknown state object kind: %d", key.Kind)
 	}
 }
 
-func (b *StateDBBlockState) GetCommittedState(key StateObjectKey) (common.Hash, error) {
+func (b *SequentialBlockState) GetCommittedState(key StateObjectKey) (common.Hash, error) {
 	// In this placeholder implementation, all reads are from the committed state,
 	// so this is the same as Read. The dedicated BlockState implementations will
 	// differentiate between committed and speculative reads.
@@ -99,11 +96,11 @@ func (b *StateDBBlockState) GetCommittedState(key StateObjectKey) (common.Hash, 
 	}
 }
 
-func (b *StateDBBlockState) Logs() []*types.Log {
+func (b *SequentialBlockState) Logs() []*types.Log {
 	return b.base.Logs()
 }
 
-func (b *StateDBBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWriteSet) error {
+func (b *SequentialBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWriteSet) error {
 	if b == nil || b.base == nil || ws == nil {
 		return nil
 	}
@@ -143,7 +140,7 @@ func (b *StateDBBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWriteSet
 	return nil
 }
 
-func (b *StateDBBlockState) AddLogs(_ int, logs []*types.Log) error {
+func (b *SequentialBlockState) AddLogs(_ int, logs []*types.Log) error {
 	if b == nil || b.base == nil {
 		return nil
 	}
@@ -153,7 +150,7 @@ func (b *StateDBBlockState) AddLogs(_ int, logs []*types.Log) error {
 	return nil
 }
 
-func (b *StateDBBlockState) AddPreimages(_ int, preimages map[common.Hash][]byte) error {
+func (b *SequentialBlockState) AddPreimages(_ int, preimages map[common.Hash][]byte) error {
 	if b == nil || b.base == nil {
 		return nil
 	}
@@ -163,11 +160,11 @@ func (b *StateDBBlockState) AddPreimages(_ int, preimages map[common.Hash][]byte
 	return nil
 }
 
-func (b *StateDBBlockState) ValidateReadSet(_ *TxReadSet) bool {
+func (b *SequentialBlockState) ValidateReadSet(_ *TxReadSet) bool {
 	return true
 }
 
-func (b *StateDBBlockState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
+func (b *SequentialBlockState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
 	if b == nil || b.base == nil {
 		return common.Hash{}, nil
 	}
