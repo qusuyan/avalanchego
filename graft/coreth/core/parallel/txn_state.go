@@ -223,22 +223,21 @@ func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
+	t.writeSet.DestructAccount(addr)
 }
 
+// Only checks if an account is marked as self-destructed in the current transaction
+// If the account is destructed in another transaction, it is marked deleted and will not be considered HasSelfDestructed
 func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
-		return op == lifecycleSelfDestructed
+		return op == lifecycleDestructed
 	}
 	return false // accounts that do not exist in the first place are not considered self-destructed
 }
 
 // call SelfDestruct only if the txn is created in the current transaction
 func (t *TxnState) Selfdestruct6780(addr common.Address) {
-	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
-		if op == lifecycleCreated {
-			t.writeSet.accountLifecycleChanges[addr] = lifecycleSelfDestructed
-		}
-	}
+	t.writeSet.DestructAccount6780(addr)
 }
 
 func (t *TxnState) Exist(addr common.Address) bool {

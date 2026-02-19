@@ -111,7 +111,7 @@ func (b *StateDBBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWriteSet
 	for addr, lifecycle := range ws.accountLifecycleChanges {
 		if lifecycle == lifecycleCreated {
 			b.base.CreateAccount(addr)
-		} else if lifecycle == lifecycleSelfDestructed {
+		} else if lifecycle == lifecycleDestructed {
 			b.base.SelfDestruct(addr)
 		}
 	}

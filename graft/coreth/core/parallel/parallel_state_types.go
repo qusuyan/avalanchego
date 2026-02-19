@@ -144,7 +144,7 @@ type AccountLifecycle uint8
 
 const (
 	lifecycleCreated AccountLifecycle = iota + 1
-	lifecycleSelfDestructed
+	lifecycleDestructed
 )
 
 // TxWriteSet captures keys mutated during a tx run and their new values.
@@ -166,24 +166,33 @@ func (w *TxWriteSet) CreateAccount(addr common.Address) {
 		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
 	}
 	w.accountLifecycleChanges[addr] = lifecycleCreated
+	// remove all writes to the account - we start with a clean slate for the created account
+	for key := range w.writes {
+		// balance of the original account will be carried over
+		// if the account was previously self-destructed, its balance would have been set to 0, so we don't need to remove the balance write
+		if key.Address == addr && key.Kind != StateObjectBalance {
+			delete(w.writes, key)
+		}
+	}
 }
 
-func (w *TxWriteSet) DeleteAccount(addr common.Address) {
+func (w *TxWriteSet) DestructAccount(addr common.Address) {
 	if w.accountLifecycleChanges == nil {
 		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
 	}
 	// Note: even if the account was created in the same transaction, we still want to mark it as self-destructed,
 	// since CreateAccount can be called on an address with a non-empty account.
-	w.accountLifecycleChanges[addr] = lifecycleSelfDestructed
+	w.accountLifecycleChanges[addr] = lifecycleDestructed
+	w.writes[BalanceKey(addr)] = StateObjectValue{balance: new(uint256.Int)}
 }
 
-func (w *TxWriteSet) DeleteAccount6780(addr common.Address) {
+func (w *TxWriteSet) DestructAccount6780(addr common.Address) {
 	if w.accountLifecycleChanges == nil {
 		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
 	}
 	// Only mark as self-destructed if the account was created in the same transaction.
 	if op, ok := w.accountLifecycleChanges[addr]; ok && op == lifecycleCreated {
-		w.accountLifecycleChanges[addr] = lifecycleSelfDestructed
+		w.DestructAccount(addr)
 	}
 }
 
