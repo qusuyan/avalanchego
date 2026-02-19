@@ -1,7 +1,7 @@
 // Copyright (C) 2026, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package core
+package parallel
 
 import (
 	"bytes"
@@ -19,30 +19,36 @@ import (
 // TxnState is a transaction-local state overlay with read/write tracking.
 // Reads check local writes first, then fallback to wrapped canonical state.
 type TxnState struct {
+	// transaction identity
 	base    BlockState
 	txHash  common.Hash
 	txIndex int
+	nonce   uint32
 
+	// read/write tracking for state objects
 	writeSet *TxWriteSet
 	readSet  *TxReadSet
 
-	refund uint64
-
+	// These never have conflicts with other transactions (write-only)
+	// but we need to write them back to block state at the end of transaction execution.
 	logs     []*types.Log
 	logSize  uint
 	preimage map[common.Hash][]byte
 
+	// These are per-transaction
+	refund     uint64
 	transient  state.TransientStorage
 	accessList *state.AccessList
 }
 
 var _ vm.StateDB = (*TxnState)(nil)
 
-func NewTxnState(base BlockState, txHash common.Hash, txIndex int) *TxnState {
+func NewTxnState(base BlockState, txHash common.Hash, txIndex int, nonce uint32) *TxnState {
 	return &TxnState{
 		base:       base,
 		txHash:     txHash,
 		txIndex:    txIndex,
+		nonce:      nonce,
 		writeSet:   NewTxWriteSet(),
 		readSet:    &TxReadSet{},
 		preimage:   make(map[common.Hash][]byte),
@@ -64,16 +70,26 @@ func (t *TxnState) Validate() bool {
 	return true
 }
 
-func (t *TxnState) finalise() error {
+func (t *TxnState) CommitTxn() error {
+	version := uint64(t.txIndex)<<32 | uint64(t.nonce) // so that we get different versions for different transactions and different executions of the same transaction
 	if t.base == nil {
 		return fmt.Errorf("nil base state")
 	}
-	return t.base.ApplyWriteSet(uint64(t.txIndex), t.writeSet)
+	if err := t.base.ApplyWriteSet(t.txIndex, version, t.writeSet); err != nil {
+		return err
+	}
+	if err := t.base.AddLogs(t.txIndex, t.logs); err != nil {
+		return err
+	}
+	if err := t.base.AddPreimages(t.txIndex, t.preimage); err != nil {
+		return err
+	}
+	return nil
 }
 
 // This function is used for testing purposes
 func (t *TxnState) Finalise(deleteEmptyObjects bool) {
-	if err := t.finalise(); err != nil {
+	if err := t.CommitTxn(); err != nil {
 		panic(err)
 	}
 	return
@@ -350,11 +366,9 @@ func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash commo
 	return out
 }
 
-// used exclusively for testing
+// deligate to block state - this is used for testing purposes
 func (t *TxnState) Logs() []*types.Log {
-	out := make([]*types.Log, len(t.logs))
-	copy(out, t.logs)
-	return out
+	return t.base.Logs()
 }
 
 // called only when writing a block back - so preimages won't have read-write conflicts.
@@ -383,7 +397,7 @@ func (t *TxnState) SetExtra(addr common.Address, extra *types.StateAccountExtra)
 
 // For testing purposes - in the common case, BlockState will write changes back to database
 func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
-	if err := t.finalise(); err != nil {
+	if err := t.CommitTxn(); err != nil {
 		return common.Hash{}, err
 	}
 	return t.base.Commit(block, deleteEmptyObjects, opts...)

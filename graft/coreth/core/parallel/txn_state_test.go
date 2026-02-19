@@ -1,4 +1,4 @@
-package core
+package parallel
 
 import (
 	"testing"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestTxnStateReadOwnWrites(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x1234"), 2)
+	tx := NewTxnState(nil, common.HexToHash("0x1234"), 2, 0)
 	addr := common.HexToAddress("0xabc")
 	slot := common.HexToHash("0x2")
 	slot2 := common.HexToHash("0x3")
@@ -46,14 +46,14 @@ func TestTxnStateReadOwnWrites(t *testing.T) {
 }
 
 func TestTxnStateValidatePhase1AlwaysTrue(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x1"), 1)
+	tx := NewTxnState(nil, common.HexToHash("0x1"), 1, 0)
 	if !tx.Validate() {
 		t.Fatalf("expected Validate() to return true in phase-1 direct wrapper")
 	}
 }
 
 func TestTxnStateLifecycleLastOpWins(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x2"), 3)
+	tx := NewTxnState(nil, common.HexToHash("0x2"), 3, 0)
 	addr := common.HexToAddress("0xdef")
 
 	tx.SelfDestruct(addr)

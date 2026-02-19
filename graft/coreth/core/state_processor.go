@@ -32,6 +32,7 @@ import (
 	"math/big"
 
 	"github.com/ava-labs/avalanchego/graft/coreth/consensus"
+	"github.com/ava-labs/avalanchego/graft/coreth/core/parallel"
 	"github.com/ava-labs/avalanchego/graft/coreth/params"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
@@ -105,12 +106,12 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		}
 		var receipt *types.Receipt
 		if parallelEnabled {
-			txState := NewTxnState(NewStateDBBlockState(statedb), tx.Hash(), i)
+			txState := parallel.NewTxnState(parallel.NewStateDBBlockState(statedb), tx.Hash(), i, 0)
 			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
-			if err := txState.finalise(); err != nil {
+			if err := txState.CommitTxn(); err != nil {
 				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 		} else {
@@ -180,7 +181,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	return receipt, err
 }
 
-func applyTransactionSpeculative(msg *Message, gp *GasPool, statedb *TxnState, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+func applyTransactionSpeculative(msg *Message, gp *GasPool, statedb *parallel.TxnState, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg)
 	evm.Reset(txContext, statedb)

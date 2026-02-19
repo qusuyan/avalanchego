@@ -1,13 +1,14 @@
 // Copyright (C) 2026, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package core
+package parallel
 
 import (
 	"fmt"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
+	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/libevm/stateconf"
 )
 
@@ -17,7 +18,10 @@ type BlockState interface {
 	Exists(addr common.Address) (bool, ObjectVersion, error)
 	Read(key StateObjectKey, txIndex uint64) (VersionedValue, error)
 	GetCommittedState(key StateObjectKey) (common.Hash, error)
-	ApplyWriteSet(txIndex uint64, ws *TxWriteSet) error
+	Logs() []*types.Log
+	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
+	AddLogs(txIndex int, logs []*types.Log) error
+	AddPreimages(txIndex int, preimages map[common.Hash][]byte) error
 	ValidateReadSet(rs *TxReadSet) bool
 	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 }
@@ -95,7 +99,11 @@ func (b *StateDBBlockState) GetCommittedState(key StateObjectKey) (common.Hash, 
 	}
 }
 
-func (b *StateDBBlockState) ApplyWriteSet(_ uint64, ws *TxWriteSet) error {
+func (b *StateDBBlockState) Logs() []*types.Log {
+	return b.base.Logs()
+}
+
+func (b *StateDBBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWriteSet) error {
 	if b == nil || b.base == nil || ws == nil {
 		return nil
 	}
@@ -131,6 +139,26 @@ func (b *StateDBBlockState) ApplyWriteSet(_ uint64, ws *TxWriteSet) error {
 				b.base.SetExtra(key.Address, extra)
 			}
 		}
+	}
+	return nil
+}
+
+func (b *StateDBBlockState) AddLogs(_ int, logs []*types.Log) error {
+	if b == nil || b.base == nil {
+		return nil
+	}
+	for _, log := range logs {
+		b.base.AddLog(log)
+	}
+	return nil
+}
+
+func (b *StateDBBlockState) AddPreimages(_ int, preimages map[common.Hash][]byte) error {
+	if b == nil || b.base == nil {
+		return nil
+	}
+	for hash, preimage := range preimages {
+		b.base.AddPreimage(hash, preimage)
 	}
 	return nil
 }
