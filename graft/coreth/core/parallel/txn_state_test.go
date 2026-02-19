@@ -4,11 +4,56 @@ import (
 	"testing"
 
 	"github.com/ava-labs/libevm/common"
+	"github.com/ava-labs/libevm/core/types"
+	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/holiman/uint256"
 )
 
+type testBlockState struct{}
+
+func (testBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
+	return true, COMMITTED_VERSION, nil
+}
+
+func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+	switch key.Kind {
+	case StateObjectBalance:
+		return &VersionedValue{Value: NewBalanceValue(uint256.NewInt(0)), Version: COMMITTED_VERSION}, nil
+	case StateObjectNonce:
+		return &VersionedValue{Value: NewNonceValue(0), Version: COMMITTED_VERSION}, nil
+	case StateObjectCodeHash:
+		return &VersionedValue{Value: NewCodeHashValue(common.Hash{}), Version: COMMITTED_VERSION}, nil
+	case StateObjectCode:
+		return &VersionedValue{Value: NewCodeValue(nil), Version: COMMITTED_VERSION}, nil
+	case StateObjectStorage:
+		return &VersionedValue{Value: NewStorageValue(common.Hash{}), Version: COMMITTED_VERSION}, nil
+	case StateObjectExtra:
+		return &VersionedValue{Value: NewExtraValue(nil), Version: COMMITTED_VERSION}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (testBlockState) GetCommittedState(StateObjectKey) (common.Hash, error) {
+	return common.Hash{}, nil
+}
+
+func (testBlockState) Logs() []*types.Log { return nil }
+
+func (testBlockState) ApplyWriteSet(int, ObjectVersion, *TxWriteSet) error { return nil }
+
+func (testBlockState) AddLogs(int, []*types.Log) error { return nil }
+
+func (testBlockState) AddPreimages(int, map[common.Hash][]byte) error { return nil }
+
+func (testBlockState) ValidateReadSet(*TxReadSet) bool { return true }
+
+func (testBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOption) (common.Hash, error) {
+	return common.Hash{}, nil
+}
+
 func TestTxnStateReadOwnWrites(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
 	addr := common.HexToAddress("0xabc")
 	slot := common.HexToHash("0x2")
 	slot2 := common.HexToHash("0x3")
@@ -46,14 +91,14 @@ func TestTxnStateReadOwnWrites(t *testing.T) {
 }
 
 func TestTxnStateValidatePhase1AlwaysTrue(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x1"), 1, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1"), 1, 0)
 	if !tx.Validate() {
 		t.Fatalf("expected Validate() to return true in phase-1 direct wrapper")
 	}
 }
 
 func TestTxnStateLifecycleLastOpWins(t *testing.T) {
-	tx := NewTxnState(nil, common.HexToHash("0x2"), 3, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2"), 3, 0)
 	addr := common.HexToAddress("0xdef")
 
 	tx.SelfDestruct(addr)

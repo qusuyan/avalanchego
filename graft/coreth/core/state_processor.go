@@ -106,7 +106,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		}
 		var receipt *types.Receipt
 		if parallelEnabled {
-			txState := parallel.NewTxnState(parallel.NewStateDBBlockState(statedb), tx.Hash(), i, 0)
+			txState := parallel.NewTxnState(parallel.NewSequentialBlockState(statedb), tx.Hash(), i, 1) // use nonce 1 to avoid version = 0 => reserved for committed state version
 			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)

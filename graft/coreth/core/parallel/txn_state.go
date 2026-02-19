@@ -1,6 +1,3 @@
-// Copyright (C) 2026, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
 package parallel
 
 import (
@@ -405,18 +402,18 @@ func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateco
 	return t.base.Commit(block, deleteEmptyObjects, opts...)
 }
 
-func (t *TxnState) readFromBase(key StateObjectKey) (VersionedValue, bool) {
+func (t *TxnState) readFromBase(key StateObjectKey) (*VersionedValue, bool) {
 	if t.base == nil {
-		return VersionedValue{}, false
+		return nil, false
 	}
 	vv, err := t.base.Read(key, uint64(t.txIndex))
 	if err != nil {
-		return VersionedValue{}, false
+		return nil, false
 	}
 	if oldVersion, exists := t.readSet.objectVersions[key]; exists {
 		if vv.Version != oldVersion {
 			// read inconsistent with previous read - early terminate
-			return VersionedValue{}, false
+			return nil, false
 		}
 	} else {
 		// first time reading this key - track version for future consistency checks
