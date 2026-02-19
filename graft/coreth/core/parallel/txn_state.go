@@ -428,6 +428,9 @@ func (t *TxnState) readFromBase(key StateObjectKey) (VersionedValue, bool) {
 // TODO: we need to change StateDB interface so that we can propagate mismatching state reads up to the EVM execution for early termination.
 // For now we just keep the first read version so that it will fail the validation check
 func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
+	if !t.Exist(key.Address) {
+		return nil, fmt.Errorf("account does not exist: %v", key.Address)
+	}
 	if value, ok := t.writeSet.Get(key); ok {
 		return &value, nil
 	}
