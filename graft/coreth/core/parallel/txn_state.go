@@ -11,6 +11,7 @@ import (
 	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
+	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/ava-labs/libevm/params"
 	"github.com/holiman/uint256"
@@ -100,7 +101,7 @@ func (t *TxnState) CreateAccount(addr common.Address) {
 }
 
 func (t *TxnState) SetBalance(addr common.Address, value *uint256.Int) {
-	t.writeSet.Set(BalanceKey(addr), NewBalanceValue(value))
+	t.write(BalanceKey(addr), NewBalanceValue(value))
 }
 
 func (t *TxnState) SubBalance(addr common.Address, amount *uint256.Int) {
@@ -140,7 +141,7 @@ func (t *TxnState) GetNonce(addr common.Address) uint64 {
 }
 
 func (t *TxnState) SetNonce(addr common.Address, nonce uint64) {
-	t.writeSet.Set(NonceKey(addr), NewNonceValue(nonce))
+	t.write(NonceKey(addr), NewNonceValue(nonce))
 }
 
 func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
@@ -162,7 +163,9 @@ func (t *TxnState) GetCode(addr common.Address) []byte {
 }
 
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
-	t.writeSet.Set(CodeKey(addr), NewCodeValue(code))
+	codeHash := crypto.Keccak256Hash(code)
+	t.write(CodeKey(addr), NewCodeValue(code))
+	t.write(CodeHashKey(addr), NewCodeHashValue(codeHash))
 }
 
 func (t *TxnState) GetCodeSize(addr common.Address) int {
@@ -207,7 +210,7 @@ func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, _ ...stateconf.StateDBStateOption) {
-	t.writeSet.Set(StorageKey(addr, key), NewStorageValue(value))
+	t.write(StorageKey(addr, key), NewStorageValue(value))
 }
 
 // Transient state are local to transaction and not tracked in read/write sets.
@@ -392,7 +395,7 @@ func (t *TxnState) GetExtra(addr common.Address) *types.StateAccountExtra {
 }
 
 func (t *TxnState) SetExtra(addr common.Address, extra *types.StateAccountExtra) {
-	t.writeSet.Set(ExtraKey(addr), NewExtraValue(extra))
+	t.write(ExtraKey(addr), NewExtraValue(extra))
 }
 
 // For testing purposes - in the common case, BlockState will write changes back to database
@@ -437,4 +440,10 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 		return &versionedValue.Value, fmt.Errorf("read version mismatch for key %v: previous version %d, current version %d", key, *oldVersion, versionedValue.Version)
 	}
 	return &versionedValue.Value, nil
+}
+
+func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
+	if t.Exist(key.Address) {
+		t.writeSet.Set(key, value)
+	}
 }
