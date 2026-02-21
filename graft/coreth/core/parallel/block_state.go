@@ -99,26 +99,26 @@ func (b *SequentialBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWrite
 		}
 	}
 
-	for key, value := range ws.Entries() {
+	for key, write := range ws.Entries() {
 		switch key.Kind {
 		case StateObjectBalance:
-			if balance, ok := value.Balance(); ok {
+			if balance, ok := write.value.Balance(); ok {
 				b.base.SetBalance(key.Address, balance)
 			}
 		case StateObjectNonce:
-			if nonce, ok := value.Nonce(); ok {
+			if nonce, ok := write.value.Nonce(); ok {
 				b.base.SetNonce(key.Address, nonce)
 			}
 		case StateObjectCode:
-			if code, ok := value.Code(); ok {
+			if code, ok := write.value.Code(); ok {
 				b.base.SetCode(key.Address, code)
 			}
 		case StateObjectStorage:
-			if storageValue, ok := value.Storage(); ok {
-				b.base.SetState(key.Address, key.Slot, storageValue)
+			if storageValue, ok := write.value.Storage(); ok {
+				b.base.SetState(key.Address, key.Slot, storageValue, write.opts...)
 			}
 		case StateObjectExtra:
-			if extra, ok := value.Extra(); ok {
+			if extra, ok := write.value.Extra(); ok {
 				b.base.SetExtra(key.Address, extra)
 			}
 		}

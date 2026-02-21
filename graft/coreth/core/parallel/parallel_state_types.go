@@ -3,6 +3,7 @@ package parallel
 import (
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/types"
+	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/holiman/uint256"
 )
 
@@ -144,16 +145,21 @@ const (
 	lifecycleDestructed
 )
 
+type WriteEntry struct {
+	value StateObjectValue
+	opts  []stateconf.StateDBStateOption // only used for storage writes
+}
+
 // TxWriteSet captures keys mutated during a tx run and their new values.
 type TxWriteSet struct {
 	accountLifecycleChanges map[common.Address]AccountLifecycle
-	writes                  map[StateObjectKey]StateObjectValue
+	writes                  map[StateObjectKey]WriteEntry
 }
 
 func NewTxWriteSet() *TxWriteSet {
 	return &TxWriteSet{
 		accountLifecycleChanges: make(map[common.Address]AccountLifecycle),
-		writes:                  make(map[StateObjectKey]StateObjectValue),
+		writes:                  make(map[StateObjectKey]WriteEntry),
 	}
 }
 
@@ -180,7 +186,7 @@ func (w *TxWriteSet) DestructAccount(addr common.Address) {
 	// Note: even if the account was created in the same transaction, we still want to mark it as self-destructed,
 	// since CreateAccount can be called on an address with a non-empty account.
 	w.accountLifecycleChanges[addr] = lifecycleDestructed
-	w.writes[BalanceKey(addr)] = StateObjectValue{balance: new(uint256.Int)}
+	w.writes[BalanceKey(addr)] = WriteEntry{value: StateObjectValue{balance: new(uint256.Int)}, opts: []stateconf.StateDBStateOption{}}
 }
 
 func (w *TxWriteSet) DestructAccount6780(addr common.Address) {
@@ -193,20 +199,20 @@ func (w *TxWriteSet) DestructAccount6780(addr common.Address) {
 	}
 }
 
-func (w *TxWriteSet) Set(key StateObjectKey, value StateObjectValue) {
+func (w *TxWriteSet) Set(key StateObjectKey, value StateObjectValue, opts ...stateconf.StateDBStateOption) {
 	if w.writes == nil {
-		w.writes = make(map[StateObjectKey]StateObjectValue)
+		w.writes = make(map[StateObjectKey]WriteEntry)
 	}
-	w.writes[key] = value
+	w.writes[key] = WriteEntry{value: value, opts: opts}
 }
 
 func (w *TxWriteSet) Get(key StateObjectKey) (StateObjectValue, bool) {
 	value, ok := w.writes[key]
-	return value, ok
+	return value.value, ok
 }
 
-func (w *TxWriteSet) Entries() map[StateObjectKey]StateObjectValue {
-	out := make(map[StateObjectKey]StateObjectValue, len(w.writes))
+func (w *TxWriteSet) Entries() map[StateObjectKey]WriteEntry {
+	out := make(map[StateObjectKey]WriteEntry, len(w.writes))
 	for key, value := range w.writes {
 		out[key] = value
 	}

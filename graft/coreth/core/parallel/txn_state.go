@@ -189,10 +189,10 @@ func (t *TxnState) GetRefund() uint64 {
 	return t.refund
 }
 
-func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
+func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
 	// Commited state refers to the state before transaction execution - we directly query blockstate for data
 	key := StorageKey(addr, state_key)
-	versionedValue, _ := t.readFromBase(key)
+	versionedValue, _ := t.readFromBase(key, opt...)
 	if versionedValue == nil {
 		return common.Hash{}
 	}
@@ -202,8 +202,8 @@ func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash,
 	return common.Hash{}
 }
 
-func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	if value, err := t.read(StorageKey(addr, key)); err == nil {
+func (t *TxnState) GetState(addr common.Address, key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
+	if value, err := t.read(StorageKey(addr, key), opt...); err == nil {
 		if storageValue, ok := value.Storage(); ok {
 			return storageValue
 		}
@@ -211,8 +211,8 @@ func (t *TxnState) GetState(addr common.Address, key common.Hash, _ ...stateconf
 	return common.Hash{}
 }
 
-func (t *TxnState) SetState(addr common.Address, key, value common.Hash, _ ...stateconf.StateDBStateOption) {
-	t.write(StorageKey(addr, key), NewStorageValue(value))
+func (t *TxnState) SetState(addr common.Address, key, value common.Hash, opt ...stateconf.StateDBStateOption) {
+	t.write(StorageKey(addr, key), NewStorageValue(value), opt...)
 }
 
 // Transient state are local to transaction and not tracked in read/write sets.
@@ -434,8 +434,8 @@ func (t *TxnState) read(key StateObjectKey, opt ...stateconf.StateDBStateOption)
 	return &versionedValue.Value, err
 }
 
-func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
+func (t *TxnState) write(key StateObjectKey, value StateObjectValue, opt ...stateconf.StateDBStateOption) {
 	if t.Exist(key.Address) {
-		t.writeSet.Set(key, value)
+		t.writeSet.Set(key, value, opt...)
 	}
 }
