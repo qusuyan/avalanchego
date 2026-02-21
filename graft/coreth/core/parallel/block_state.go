@@ -13,8 +13,7 @@ import (
 // It exposes versioned reads and deterministic write-set application.
 type BlockState interface {
 	Exists(addr common.Address) (bool, ObjectVersion, error)
-	Read(key StateObjectKey, txIndex uint64) (*VersionedValue, error)
-	GetCommittedState(key StateObjectKey) (common.Hash, error)
+	Read(key StateObjectKey, txIndex uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error)
 	Logs() []*types.Log
 	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
 	AddLogs(txIndex int, logs []*types.Log) error
@@ -43,7 +42,7 @@ func (b *SequentialBlockState) Exists(addr common.Address) (bool, ObjectVersion,
 	return exists, COMMITTED_VERSION, nil
 }
 
-func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
 	if b == nil || b.base == nil {
 		return nil, fmt.Errorf("nil base state")
 	}
@@ -70,7 +69,7 @@ func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedVal
 		}, nil
 	case StateObjectStorage:
 		return &VersionedValue{
-			Value:   NewStorageValue(b.base.GetState(key.Address, key.Slot)),
+			Value:   NewStorageValue(b.base.GetState(key.Address, key.Slot, opt...)),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectExtra:
@@ -80,20 +79,6 @@ func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedVal
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown state object kind: %d", key.Kind)
-	}
-}
-
-func (b *SequentialBlockState) GetCommittedState(key StateObjectKey) (common.Hash, error) {
-	// In this placeholder implementation, all reads are from the committed state,
-	// so this is the same as Read. The dedicated BlockState implementations will
-	// differentiate between committed and speculative reads.
-	if v, err := b.Read(key, 0); err == nil {
-		if storageValue, ok := v.Value.Storage(); ok {
-			return storageValue, nil
-		}
-		return common.Hash{}, fmt.Errorf("committed value for key not found or not a storage value")
-	} else {
-		return common.Hash{}, err
 	}
 }
 

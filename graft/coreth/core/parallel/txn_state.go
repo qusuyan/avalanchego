@@ -189,10 +189,15 @@ func (t *TxnState) GetRefund() uint64 {
 	return t.refund
 }
 
-func (t *TxnState) GetCommittedState(addr common.Address, key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
-	// Committed state does not change during block execution - we skip any bookkeeping
-	if value, err := t.base.GetCommittedState(StorageKey(addr, key)); err == nil {
-		return value
+func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash, _ ...stateconf.StateDBStateOption) common.Hash {
+	// Commited state refers to the state before transaction execution - we directly query blockstate for data
+	key := StorageKey(addr, state_key)
+	versionedValue, _ := t.readFromBase(key)
+	if versionedValue == nil {
+		return common.Hash{}
+	}
+	if storageValue, ok := versionedValue.Value.Storage(); ok {
+		return storageValue
 	}
 	return common.Hash{}
 }
@@ -402,43 +407,31 @@ func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateco
 	return t.base.Commit(block, deleteEmptyObjects, opts...)
 }
 
-func (t *TxnState) readFromBase(key StateObjectKey) (*VersionedValue, bool) {
+func (t *TxnState) readFromBase(key StateObjectKey, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
 	if t.base == nil {
-		return nil, false
+		return nil, fmt.Errorf("base is nil")
 	}
-	vv, err := t.base.Read(key, uint64(t.txIndex))
+	vv, err := t.base.Read(key, uint64(t.txIndex), opt...)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
-	if oldVersion, exists := t.readSet.objectVersions[key]; exists {
-		if vv.Version != oldVersion {
-			// read inconsistent with previous read - early terminate
-			return nil, false
-		}
-	} else {
-		// first time reading this key - track version for future consistency checks
-		t.readSet.objectVersions[key] = vv.Version
+	if oldVersion := t.readSet.RecordObjectVersion(key, vv.Version); oldVersion != nil {
+		return vv, fmt.Errorf("read version mismatch for key %v: previous version %d, current version %d", key, *oldVersion, vv.Version)
 	}
-	return vv, true
+	return vv, nil
 }
 
 // TODO: we need to change StateDB interface so that we can propagate mismatching state reads up to the EVM execution for early termination.
 // For now we just keep the first read version so that it will fail the validation check
-func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
+func (t *TxnState) read(key StateObjectKey, opt ...stateconf.StateDBStateOption) (*StateObjectValue, error) {
 	if !t.Exist(key.Address) {
 		return nil, fmt.Errorf("account does not exist: %v", key.Address)
 	}
 	if value, ok := t.writeSet.Get(key); ok {
 		return &value, nil
 	}
-	versionedValue, ok := t.readFromBase(key)
-	if !ok {
-		return nil, fmt.Errorf("key not found in base state: %v", key)
-	}
-	if oldVersion := t.readSet.RecordObjectVersion(key, versionedValue.Version); oldVersion != nil {
-		return &versionedValue.Value, fmt.Errorf("read version mismatch for key %v: previous version %d, current version %d", key, *oldVersion, versionedValue.Version)
-	}
-	return &versionedValue.Value, nil
+	versionedValue, err := t.readFromBase(key, opt...)
+	return &versionedValue.Value, err
 }
 
 func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {

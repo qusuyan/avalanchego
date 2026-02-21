@@ -175,7 +175,7 @@ func (b *StateDBLastWriterBlockState) Exists(addr common.Address) (bool, ObjectV
 	return b.statedb.Exist(addr), COMMITTED_VERSION, nil
 }
 
-func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
 	exists, version, err := b.Exists(key.Address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existence for address %s: %w", key.Address.Hex(), err)
@@ -202,22 +202,12 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*Versi
 	case StateObjectCode:
 		return &VersionedValue{Value: NewCodeValue(b.statedb.GetCode(key.Address)), Version: COMMITTED_VERSION}, nil
 	case StateObjectStorage:
-		return &VersionedValue{Value: NewStorageValue(b.statedb.GetState(key.Address, key.Slot)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewStorageValue(b.statedb.GetState(key.Address, key.Slot, opt...)), Version: COMMITTED_VERSION}, nil
 	case StateObjectExtra:
 		return &VersionedValue{Value: NewExtraValue(b.statedb.GetExtra(key.Address)), Version: COMMITTED_VERSION}, nil
 	default:
 		return nil, fmt.Errorf("unknown state object kind: %d", key.Kind)
 	}
-}
-
-func (b *StateDBLastWriterBlockState) GetCommittedState(key StateObjectKey) (common.Hash, error) {
-	if b.statedb == nil {
-		return common.Hash{}, fmt.Errorf("nil base state")
-	}
-	if key.Kind != StateObjectStorage {
-		return common.Hash{}, fmt.Errorf("committed state only supported for storage keys")
-	}
-	return b.statedb.GetCommittedState(key.Address, key.Slot), nil
 }
 
 func (b *StateDBLastWriterBlockState) Logs() []*types.Log {

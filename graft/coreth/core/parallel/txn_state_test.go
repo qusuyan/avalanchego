@@ -15,7 +15,7 @@ func (testBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
 	return true, COMMITTED_VERSION, nil
 }
 
-func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (testBlockState) Read(key StateObjectKey, _ uint64, _ ...stateconf.StateDBStateOption) (*VersionedValue, error) {
 	switch key.Kind {
 	case StateObjectBalance:
 		return &VersionedValue{Value: NewBalanceValue(uint256.NewInt(0)), Version: COMMITTED_VERSION}, nil
@@ -32,10 +32,6 @@ func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error
 	default:
 		return nil, nil
 	}
-}
-
-func (testBlockState) GetCommittedState(StateObjectKey) (common.Hash, error) {
-	return common.Hash{}, nil
 }
 
 func (testBlockState) Logs() []*types.Log { return nil }
