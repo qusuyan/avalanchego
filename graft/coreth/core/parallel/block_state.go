@@ -13,7 +13,7 @@ import (
 // It exposes versioned reads and deterministic write-set application.
 type BlockState interface {
 	Exists(addr common.Address) (bool, ObjectVersion, error)
-	Read(key StateObjectKey, txIndex uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error)
+	Read(key StateObjectKey, txIndex uint64) (*VersionedValue, error)
 	Logs() []*types.Log
 	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
 	AddLogs(txIndex int, logs []*types.Log) error
@@ -42,7 +42,7 @@ func (b *SequentialBlockState) Exists(addr common.Address) (bool, ObjectVersion,
 	return exists, COMMITTED_VERSION, nil
 }
 
-func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
+func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
 	if b == nil || b.base == nil {
 		return nil, fmt.Errorf("nil base state")
 	}
@@ -69,7 +69,7 @@ func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64, opt ...stateco
 		}, nil
 	case StateObjectStorage:
 		return &VersionedValue{
-			Value:   NewStorageValue(b.base.GetState(key.Address, key.Slot, opt...)),
+			Value:   NewStorageValue(b.base.GetState(key.Address, key.Slot, stateconf.SkipStateKeyTransformation())),
 			Version: COMMITTED_VERSION,
 		}, nil
 	case StateObjectExtra:
@@ -102,23 +102,23 @@ func (b *SequentialBlockState) ApplyWriteSet(_ int, _ ObjectVersion, ws *TxWrite
 	for key, write := range ws.Entries() {
 		switch key.Kind {
 		case StateObjectBalance:
-			if balance, ok := write.value.Balance(); ok {
+			if balance, ok := write.Balance(); ok {
 				b.base.SetBalance(key.Address, balance)
 			}
 		case StateObjectNonce:
-			if nonce, ok := write.value.Nonce(); ok {
+			if nonce, ok := write.Nonce(); ok {
 				b.base.SetNonce(key.Address, nonce)
 			}
 		case StateObjectCode:
-			if code, ok := write.value.Code(); ok {
+			if code, ok := write.Code(); ok {
 				b.base.SetCode(key.Address, code)
 			}
 		case StateObjectStorage:
-			if storageValue, ok := write.value.Storage(); ok {
-				b.base.SetState(key.Address, key.Slot, storageValue, write.opts...)
+			if storageValue, ok := write.Storage(); ok {
+				b.base.SetState(key.Address, key.Slot, storageValue, stateconf.SkipStateKeyTransformation())
 			}
 		case StateObjectExtra:
-			if extra, ok := write.value.Extra(); ok {
+			if extra, ok := write.Extra(); ok {
 				b.base.SetExtra(key.Address, extra)
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ava-labs/libevm/common"
+	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/holiman/uint256"
@@ -11,11 +12,50 @@ import (
 
 type testBlockState struct{}
 
+type transformTestHooks struct{}
+
+func (transformTestHooks) TransformStateKey(_ common.Address, key common.Hash) common.Hash {
+	key[0] |= 0x80
+	return key
+}
+
+type recordingBlockState struct {
+	lastReadKey StateObjectKey
+}
+
+func (b *recordingBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
+	return true, COMMITTED_VERSION, nil
+}
+
+func (b *recordingBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+	b.lastReadKey = key
+	if key.Kind == StateObjectStorage {
+		return &VersionedValue{Value: NewStorageValue(common.HexToHash("0x99")), Version: COMMITTED_VERSION}, nil
+	}
+	return (&testBlockState{}).Read(key, 0)
+}
+
+func (b *recordingBlockState) Logs() []*types.Log { return nil }
+
+func (b *recordingBlockState) ApplyWriteSet(int, ObjectVersion, *TxWriteSet) error { return nil }
+
+func (b *recordingBlockState) AddLogs(int, []*types.Log) error { return nil }
+
+func (b *recordingBlockState) AddPreimages(int, map[common.Hash][]byte) error { return nil }
+
+func (b *recordingBlockState) ValidateReadSet(*TxReadSet) bool { return true }
+
+func (b *recordingBlockState) WriteBack() error { return nil }
+
+func (b *recordingBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOption) (common.Hash, error) {
+	return common.Hash{}, nil
+}
+
 func (testBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
 	return true, COMMITTED_VERSION, nil
 }
 
-func (testBlockState) Read(key StateObjectKey, _ uint64, _ ...stateconf.StateDBStateOption) (*VersionedValue, error) {
+func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
 	switch key.Kind {
 	case StateObjectBalance:
 		return &VersionedValue{Value: NewBalanceValue(uint256.NewInt(0)), Version: COMMITTED_VERSION}, nil
@@ -117,5 +157,51 @@ func TestTxnStateLifecycleLastOpWins(t *testing.T) {
 	}
 	if !tx.Exist(addr) {
 		t.Fatalf("expected suicided account to still be considered existing in tx overlay")
+	}
+}
+
+func TestTxnStateStorageCanonicalization(t *testing.T) {
+	state.TestOnlyClearRegisteredExtras()
+	defer state.TestOnlyClearRegisteredExtras()
+	state.RegisterExtras(transformTestHooks{})
+
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	addr := common.HexToAddress("0xabc")
+	slot := common.HexToHash("0x2")
+	value := common.HexToHash("0x55")
+	transformedSlot := state.TransformStateKey(addr, slot)
+
+	tx.SetState(addr, slot, value)
+
+	if _, ok := tx.writeSet.Get(StorageKey(addr, slot)); ok {
+		t.Fatalf("expected raw slot key to not be present in writeset")
+	}
+
+	write, ok := tx.writeSet.Entries()[StorageKey(addr, transformedSlot)]
+	if !ok {
+		t.Fatalf("expected transformed slot key to be present in writeset")
+	}
+	if storedValue, ok := write.Storage(); !ok || storedValue != value {
+		t.Fatalf("unexpected stored value: %s", storedValue)
+	}
+}
+
+func TestTxnStateStorageReadUsesCanonicalizedKey(t *testing.T) {
+	state.TestOnlyClearRegisteredExtras()
+	defer state.TestOnlyClearRegisteredExtras()
+	state.RegisterExtras(transformTestHooks{})
+
+	base := &recordingBlockState{}
+	tx := NewTxnState(base, common.HexToHash("0x1234"), 2, 0)
+	addr := common.HexToAddress("0xabc")
+	slot := common.HexToHash("0x2")
+	transformedSlot := state.TransformStateKey(addr, slot)
+
+	got := tx.GetState(addr, slot)
+	if got != common.HexToHash("0x99") {
+		t.Fatalf("unexpected storage value: %s", got)
+	}
+	if base.lastReadKey != StorageKey(addr, transformedSlot) {
+		t.Fatalf("expected transformed key %v, got %v", StorageKey(addr, transformedSlot), base.lastReadKey)
 	}
 }

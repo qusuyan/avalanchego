@@ -16,11 +16,6 @@ type ExistsState struct {
 	Version   ObjectVersion
 }
 
-type ObjectState struct {
-	Value VersionedValue
-	Opt   []stateconf.StateDBStateOption // only used for storage writes
-}
-
 type txLogs struct {
 	entries []*types.Log
 }
@@ -45,7 +40,7 @@ type StateDBLastWriterBlockState struct {
 	dbErr error
 
 	// Canonical last-writer-wins entries carry both value and version together.
-	objectStates sync.Map // map[StateObjectKey]*atomic.Pointer[ObjectState]
+	objectStates sync.Map // map[StateObjectKey]*atomic.Pointer[VersionedValue]
 	existsStates sync.Map // map[common.Address]*atomic.Pointer[ExistsState]
 
 	// Side-effect tracking by tx index.
@@ -77,12 +72,12 @@ func (b *StateDBLastWriterBlockState) loadExistsState(addr common.Address) *Exis
 	return exists
 }
 
-func (b *StateDBLastWriterBlockState) loadObjectState(key StateObjectKey) *ObjectState {
+func (b *StateDBLastWriterBlockState) loadObjectState(key StateObjectKey) *VersionedValue {
 	value, ok := b.objectStates.Load(key)
 	if !ok {
 		return nil
 	}
-	ptr := value.(*atomic.Pointer[ObjectState])
+	ptr := value.(*atomic.Pointer[VersionedValue])
 	object := ptr.Load()
 	if object == nil {
 		return nil
@@ -95,9 +90,9 @@ func (b *StateDBLastWriterBlockState) getOrCreateExistsPtr(addr common.Address) 
 	return ptr.(*atomic.Pointer[ExistsState])
 }
 
-func (b *StateDBLastWriterBlockState) getOrCreateObjectPtr(key StateObjectKey) *atomic.Pointer[ObjectState] {
-	ptr, _ := b.objectStates.LoadOrStore(key, &atomic.Pointer[ObjectState]{})
-	return ptr.(*atomic.Pointer[ObjectState])
+func (b *StateDBLastWriterBlockState) getOrCreateObjectPtr(key StateObjectKey) *atomic.Pointer[VersionedValue] {
+	ptr, _ := b.objectStates.LoadOrStore(key, &atomic.Pointer[VersionedValue]{})
+	return ptr.(*atomic.Pointer[VersionedValue])
 }
 
 func (b *StateDBLastWriterBlockState) storeExistsLWW(addr common.Address, next ExistsState) bool {
@@ -113,11 +108,11 @@ func (b *StateDBLastWriterBlockState) storeExistsLWW(addr common.Address, next E
 	}
 }
 
-func (b *StateDBLastWriterBlockState) storeObjectLWW(key StateObjectKey, next ObjectState) bool {
+func (b *StateDBLastWriterBlockState) storeObjectLWW(key StateObjectKey, next VersionedValue) bool {
 	ptr := b.getOrCreateObjectPtr(key)
 	for {
 		curr := ptr.Load()
-		if curr != nil && curr.Value.Version > next.Value.Version {
+		if curr != nil && curr.Version > next.Version {
 			return false
 		}
 		if ptr.CompareAndSwap(curr, &next) {
@@ -135,10 +130,10 @@ func (b *StateDBLastWriterBlockState) clearAddressObjectsUpToVersion(addr common
 		if keepBalance && key.Kind == StateObjectBalance {
 			return true
 		}
-		ptr := v.(*atomic.Pointer[ObjectState])
+		ptr := v.(*atomic.Pointer[VersionedValue])
 		for {
 			curr := ptr.Load()
-			if curr == nil || curr.Value.Version > version {
+			if curr == nil || curr.Version > version {
 				return true
 			}
 			if ptr.CompareAndSwap(curr, nil) {
@@ -180,7 +175,7 @@ func (b *StateDBLastWriterBlockState) Exists(addr common.Address) (bool, ObjectV
 	return b.statedb.Exist(addr), COMMITTED_VERSION, nil
 }
 
-func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
+func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
 	exists, version, err := b.Exists(key.Address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existence for address %s: %w", key.Address.Hex(), err)
@@ -190,7 +185,7 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64, opt ...
 	}
 
 	if entry := b.loadObjectState(key); entry != nil {
-		return &entry.Value, nil
+		return entry, nil
 	}
 
 	if b.statedb == nil {
@@ -207,7 +202,7 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64, opt ...
 	case StateObjectCode:
 		return &VersionedValue{Value: NewCodeValue(b.statedb.GetCode(key.Address)), Version: COMMITTED_VERSION}, nil
 	case StateObjectStorage:
-		return &VersionedValue{Value: NewStorageValue(b.statedb.GetState(key.Address, key.Slot, opt...)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewStorageValue(b.statedb.GetState(key.Address, key.Slot, stateconf.SkipStateKeyTransformation())), Version: COMMITTED_VERSION}, nil
 	case StateObjectExtra:
 		return &VersionedValue{Value: NewExtraValue(b.statedb.GetExtra(key.Address)), Version: COMMITTED_VERSION}, nil
 	default:
@@ -272,7 +267,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 				continue
 			}
 		}
-		if !b.storeObjectLWW(key, ObjectState{Value: VersionedValue{Value: write.value, Version: version}, Opt: write.opts}) {
+		if !b.storeObjectLWW(key, VersionedValue{Value: write, Version: version}) {
 			// A newer object version already exists; skip stale write.
 			continue
 		}
@@ -330,30 +325,30 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 	// Apply object last-writer-wins state.
 	b.objectStates.Range(func(k, v any) bool {
 		key := k.(StateObjectKey)
-		ptr := v.(*atomic.Pointer[ObjectState])
+		ptr := v.(*atomic.Pointer[VersionedValue])
 		objectState := ptr.Load()
 		if objectState == nil {
 			return true
 		}
 		switch key.Kind {
 		case StateObjectBalance:
-			if balance, ok := objectState.Value.Value.Balance(); ok {
+			if balance, ok := objectState.Value.Balance(); ok {
 				b.statedb.SetBalance(key.Address, balance)
 			}
 		case StateObjectNonce:
-			if nonce, ok := objectState.Value.Value.Nonce(); ok {
+			if nonce, ok := objectState.Value.Nonce(); ok {
 				b.statedb.SetNonce(key.Address, nonce)
 			}
 		case StateObjectCode:
-			if code, ok := objectState.Value.Value.Code(); ok {
+			if code, ok := objectState.Value.Code(); ok {
 				b.statedb.SetCode(key.Address, code)
 			}
 		case StateObjectStorage:
-			if storageValue, ok := objectState.Value.Value.Storage(); ok {
-				b.statedb.SetState(key.Address, key.Slot, storageValue, objectState.Opt...)
+			if storageValue, ok := objectState.Value.Storage(); ok {
+				b.statedb.SetState(key.Address, key.Slot, storageValue, stateconf.SkipStateKeyTransformation())
 			}
 		case StateObjectExtra:
-			if extra, ok := objectState.Value.Value.Extra(); ok {
+			if extra, ok := objectState.Value.Extra(); ok {
 				b.statedb.SetExtra(key.Address, extra)
 			}
 		}

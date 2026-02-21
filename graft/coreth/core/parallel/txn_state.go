@@ -190,9 +190,10 @@ func (t *TxnState) GetRefund() uint64 {
 }
 
 func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
-	// Commited state refers to the state before transaction execution - we directly query blockstate for data
-	key := StorageKey(addr, state_key)
-	versionedValue, _ := t.readFromBase(key, opt...)
+	// Commited state refers to the state before transaction execution - we directly query blockstate for data.
+	canonicalKey := state.TransformStateKey(addr, state_key, opt...)
+	key := StorageKey(addr, canonicalKey)
+	versionedValue, _ := t.readFromBase(key)
 	if versionedValue == nil {
 		return common.Hash{}
 	}
@@ -203,7 +204,8 @@ func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash,
 }
 
 func (t *TxnState) GetState(addr common.Address, key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
-	if value, err := t.read(StorageKey(addr, key), opt...); err == nil {
+	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	if value, err := t.read(StorageKey(addr, canonicalKey)); err == nil {
 		if storageValue, ok := value.Storage(); ok {
 			return storageValue
 		}
@@ -212,7 +214,8 @@ func (t *TxnState) GetState(addr common.Address, key common.Hash, opt ...stateco
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, opt ...stateconf.StateDBStateOption) {
-	t.write(StorageKey(addr, key), NewStorageValue(value), opt...)
+	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	t.write(StorageKey(addr, canonicalKey), NewStorageValue(value))
 }
 
 // Transient state are local to transaction and not tracked in read/write sets.
@@ -407,11 +410,11 @@ func (t *TxnState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateco
 	return t.base.Commit(block, deleteEmptyObjects, opts...)
 }
 
-func (t *TxnState) readFromBase(key StateObjectKey, opt ...stateconf.StateDBStateOption) (*VersionedValue, error) {
+func (t *TxnState) readFromBase(key StateObjectKey) (*VersionedValue, error) {
 	if t.base == nil {
 		return nil, fmt.Errorf("base is nil")
 	}
-	vv, err := t.base.Read(key, uint64(t.txIndex), opt...)
+	vv, err := t.base.Read(key, uint64(t.txIndex))
 	if err != nil {
 		return nil, err
 	}
@@ -423,19 +426,19 @@ func (t *TxnState) readFromBase(key StateObjectKey, opt ...stateconf.StateDBStat
 
 // TODO: we need to change StateDB interface so that we can propagate mismatching state reads up to the EVM execution for early termination.
 // For now we just keep the first read version so that it will fail the validation check
-func (t *TxnState) read(key StateObjectKey, opt ...stateconf.StateDBStateOption) (*StateObjectValue, error) {
+func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 	if !t.Exist(key.Address) {
 		return nil, fmt.Errorf("account does not exist: %v", key.Address)
 	}
 	if value, ok := t.writeSet.Get(key); ok {
 		return &value, nil
 	}
-	versionedValue, err := t.readFromBase(key, opt...)
+	versionedValue, err := t.readFromBase(key)
 	return &versionedValue.Value, err
 }
 
-func (t *TxnState) write(key StateObjectKey, value StateObjectValue, opt ...stateconf.StateDBStateOption) {
+func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
 	if t.Exist(key.Address) {
-		t.writeSet.Set(key, value, opt...)
+		t.writeSet.Set(key, value)
 	}
 }
