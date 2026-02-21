@@ -48,6 +48,10 @@ func (testBlockState) AddPreimages(int, map[common.Hash][]byte) error { return n
 
 func (testBlockState) ValidateReadSet(*TxReadSet) bool { return true }
 
+func (testBlockState) WriteBack() error {
+	return nil
+}
+
 func (testBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOption) (common.Hash, error) {
 	return common.Hash{}, nil
 }

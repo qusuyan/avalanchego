@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-18
+Last updated: 2026-02-20
 
 ## Scope
 
@@ -10,11 +10,56 @@ This document summarizes:
 2. The agreed target direction for parallel transaction execution.
 3. Key constraints and open decisions to pick up later.
 
+## Progress Update (2026-02-20)
+
+### Completed Since Last Update
+
+1. Integrated block-scoped `StateDBLastWriterBlockState` into `StateProcessor` parallel path:
+- pre-collect tx hashes
+- create one block state for all txs
+- run `TxnState.CommitTxn()` per tx into block state
+- call `blockState.WriteBack()` before `engine.Finalize(...)`
+
+2. Extended `BlockState` contract with explicit `WriteBack() error` phase.
+
+3. Implemented `StateDBLastWriterBlockState` with:
+- last-writer-wins object/existence tracking (`objectStates`, `existsStates`)
+- read path that checks account liveness and returns empty value for deleted accounts
+- tx-indexed logs/preimages buffers
+
+4. Switched internal write-path storage to atomic-pointer based structures:
+- object and existence entries use per-key atomic pointer CAS updates
+- logs/preimages use pre-sized tx-index arrays of atomic pointers
+
+5. Fixed log replay context in `WriteBack()`:
+- `SetTxContext(txHash, txIndex)` is set before replaying logs for each tx slot.
+
+6. Updated lifecycle conflict handling:
+- `ApplyWriteSet` now treats account creation as a fresh state epoch by clearing stale object entries for that address (while preserving balance semantics used by current `TxWriteSet.CreateAccount` path).
+
+7. Updated tests and test harness:
+- `TxnState` tests now use a concrete test `BlockState` stub instead of `nil`.
+- Parallel/core test targets pass with current wiring.
+
+### Current Status
+
+1. Parallel processing path now writes into block-scoped LWW state and writes back to `StateDB` before finalize.
+2. `ValidateReadSet(...)` is still a placeholder (`true`).
+3. Conflict retries/scheduler path is not yet implemented; execution is still in-order.
+4. Lifecycle semantics are improved but still need broader parity validation against `StateDB` edge cases.
+
+### Next Work Items
+
+1. Implement real `ValidateReadSet(...)` against current canonical versions in `StateDBLastWriterBlockState`.
+2. Add focused tests for destroy/recreate/write interactions across tx boundaries.
+3. Add tests for log/preimage replay determinism and tx-context correctness.
+4. Validate parity for `SelfDestruct`/`Selfdestruct6780` and account existence behavior under mixed tx sequences.
+
 ## Progress Update (2026-02-18)
 
 ### Completed Since Last Update
 
-1. Added a concrete `BlockState` contract and `StateDBBlockState` adapter in `graft/coreth/core/block_state.go`.
+1. Added a concrete `BlockState` contract and `SequentialBlockState` adapter in `graft/coreth/core/parallel/block_state.go`.
 2. `TxnState` now depends on `BlockState` (not `*state.StateDB`) and commits through:
 - `ApplyWriteSet(txIndex, *TxWriteSet)`
 - `Commit(...)` delegation for test-only paths
@@ -24,23 +69,32 @@ This document summarizes:
 - `TxWriteSet` split into account lifecycle changes + object writes
 4. Added explicit object key for code hash (`StateObjectCodeHash` / `CodeHashKey`) and typed value accessors (`CodeHash()`).
 5. `state_processor` parallel-enabled path now instantiates:
-- `NewTxnState(NewStateDBBlockState(statedb), tx.Hash(), i)`
+- `NewTxnState(NewSequentialBlockState(statedb), tx.Hash(), i, nonce)`
 6. `TxnState` was aligned closer to libevm semantics for tx-local bookkeeping:
 - `state.AccessList` and `state.TransientStorage` are used directly
 - `Prepare(...)` now applies Berlin/Shanghai warming rules and resets transient storage
 - `GetLogs(...)` is tx-local only (non-matching tx hash returns `nil`)
 7. `TxnState` read path now captures observed versions from `BlockState.Read(...)` and stores them in `TxReadSet` for later validation.
+8. Added `StateDBLastWriterBlockState` (`graft/coreth/core/parallel/statedb_last_writer_block_state.go`) as the new phase-2 direction:
+- wraps a single `*state.StateDB` baseline
+- tracks in-block canonical last-writer-wins state (`objectStates`, `existsStates`)
+- reserves `logsByTx` / `preimagesByTx` per transaction index
+- defers materialization to `StateDB` until `BlockState.Commit(...)`
 
 ### Current Status
 
 1. Wiring is in place for `TxnState -> BlockState.Read/ApplyWriteSet/Exists/GetCommittedState`.
 2. `StateDBBlockState` currently uses placeholder versions (`COMMITTED_VERSION` / `ERROR_VERSION`) and `ValidateReadSet(...)` is still a stub that returns `true`.
-3. Account lifecycle is now represented in `TxWriteSet.accountLifecycleChanges`, and applied in the adapter during `ApplyWriteSet(...)`.
-4. `TxnState.Validate()` remains a phase placeholder (`true`) and is not yet connected to coordinator-driven read-set validation.
+3. Account lifecycle is now represented in `TxWriteSet.accountLifecycleChanges`.
+4. `StateDBLastWriterBlockState.ApplyWriteSet(...)` is now the canonical merge point for lifecycle/object conflicts:
+- resolve existence/lifecycle first
+- destruct clears overlay object writes for that address and keeps zero-balance canonicalization
+- apply object writes only if not superseded by newer lifecycle/object versions
+5. `TxnState.Validate()` remains a phase placeholder (`true`) and is not yet connected to coordinator-driven read-set validation.
 
 ### Next Work Items
 
-1. Replace placeholder `StateDBBlockState` versioning with real per-object versions and conflict detection.
+1. Complete wiring from `state_processor` to a single block-scoped `StateDBLastWriterBlockState`.
 2. Implement `ValidateReadSet(*TxReadSet)` against canonical current versions.
 3. Complete lifecycle semantics parity (`SelfDestruct`, EIP-6780 behavior, `Empty`/`Exist` edge cases) under tx-local overlay + canonical apply.
 4. Add focused tests for:
@@ -122,8 +176,8 @@ User requirement: do not switch to sequential path when conflicts are high.
 3. State versioning for conflict checks:
 - Per-key version tracking in canonical state view.
 
-Note: current implementation uses `StateDBBlockState` as a compatibility adapter, so
-`TxnState` already depends on `BlockState`, but version validation is still placeholder.
+Note: current implementation keeps `SequentialBlockState` for compatibility wiring and
+introduces `StateDBLastWriterBlockState` for phase-2 last-writer-wins semantics. Version validation is still placeholder.
 
 ## State Object Versioning Rules (Planned for BlockState Phase)
 
@@ -221,22 +275,28 @@ Acceptance criteria:
 - Deterministic ordered commit with parallel run attempts.
 - `TxnState` methods are compatible with current EVM `vm.StateDB` usage.
 
-### Phase 2: Introduce BlockState (Database-Backed Canonical State)
+### Phase 2: Introduce BlockState (StateDB-Backed Overlay Canonical State)
 
-Goal: move canonical ownership from `state.StateDB` toward new `BlockState`.
+Goal: keep canonical ownership in `state.StateDB` while moving tx-merge/read-version
+logic into `BlockState` overlay structures.
 
-1. Implement `BlockState` around database/trie/snapshot:
-- canonical read interfaces
-- in-memory cache for hot objects/slots
-- `StartPrefetcher()`, `StopPrefetcher()`
-- block-level `Commit()`
+1. Implement `StateDBLastWriterBlockState` around a single block `*state.StateDB`:
+- canonical read interfaces (`overlay-first`, `StateDB` fallback)
+- in-memory canonical last-writer-wins state:
+  - `objectStates map[StateObjectKey]VersionedValue`
+  - `existsStates map[common.Address]ExistsState`
+  - `logsByTx [][]*types.Log`
+  - `preimagesByTx []map[common.Hash][]byte`
+- block-level `Commit()`:
+  - apply merged last-writer-wins state to `StateDB`
+  - call `StateDB.Commit(...)`
 
-2. Keep a compatibility bridge to existing `state.StateDB` semantics where needed.
-3. Route `TxnCommit` writes into `BlockState` instead of direct canonical `state.StateDB`.
+2. Keep compatibility adapter (`SequentialBlockState`) until full processor wiring migration completes.
+3. Route `TxnCommit` writes into `BlockState` overlay rather than mutating canonical `StateDB` directly during tx execution.
 
 Acceptance criteria:
-- Parallel path no longer depends on canonical `state.StateDB` for reads/writes.
-- Snapshot/trie commit behavior remains correct.
+- Parallel tx execution path no longer mutates canonical `StateDB` directly during tx run/finalize.
+- Overlay materialization preserves `StateDB` semantics and commit correctness.
 
 ### Phase 3: Parallel Processor Path
 

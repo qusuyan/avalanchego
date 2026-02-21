@@ -20,6 +20,7 @@ type BlockState interface {
 	AddLogs(txIndex int, logs []*types.Log) error
 	AddPreimages(txIndex int, preimages map[common.Hash][]byte) error
 	ValidateReadSet(rs *TxReadSet) bool
+	WriteBack() error
 	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 }
 
@@ -164,9 +165,14 @@ func (b *SequentialBlockState) ValidateReadSet(_ *TxReadSet) bool {
 	return true
 }
 
+func (b *SequentialBlockState) WriteBack() error {
+	// No-op since this BlockState writes directly to the base StateDB.
+	return nil
+}
+
 func (b *SequentialBlockState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
 	if b == nil || b.base == nil {
-		return common.Hash{}, nil
+		return common.Hash{}, fmt.Errorf("nil base state")
 	}
 	return b.base.Commit(block, deleteEmptyObjects, opts...)
 }

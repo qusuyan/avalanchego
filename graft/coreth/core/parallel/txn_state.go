@@ -48,7 +48,7 @@ func NewTxnState(base BlockState, txHash common.Hash, txIndex int, nonce uint32)
 		txIndex:    txIndex,
 		nonce:      nonce,
 		writeSet:   NewTxWriteSet(),
-		readSet:    &TxReadSet{},
+		readSet:    NewTxReadSet(),
 		preimage:   make(map[common.Hash][]byte),
 		transient:  state.NewTransientStorage(),
 		accessList: state.NewAccessList(),

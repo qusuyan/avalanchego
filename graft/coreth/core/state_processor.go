@@ -99,14 +99,20 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	}
 	parallelEnabled := cfg.ParallelExecutionEnabled
 	// Iterate over and process the individual transactions
-	for i, tx := range block.Transactions() {
-		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+	if parallelEnabled {
+		txHashes := make([]common.Hash, len(block.Transactions()))
+		for i, tx := range block.Transactions() {
+			txHashes[i] = tx.Hash()
 		}
-		var receipt *types.Receipt
-		if parallelEnabled {
-			txState := parallel.NewTxnState(parallel.NewSequentialBlockState(statedb), tx.Hash(), i, 1) // use nonce 1 to avoid version = 0 => reserved for committed state version
+		blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
+		for i, tx := range block.Transactions() {
+			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+
+			var receipt *types.Receipt
+			txState := parallel.NewTxnState(blockState, tx.Hash(), i, 1) // use nonce 1 to avoid version = 0 => reserved for committed state version
 			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -114,16 +120,32 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 			if err := txState.CommitTxn(); err != nil {
 				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
-		} else {
+
+			receipts = append(receipts, receipt)
+			allLogs = append(allLogs, receipt.Logs...)
+		}
+		if err := blockState.WriteBack(); err != nil {
+			return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
+		}
+	} else {
+		for i, tx := range block.Transactions() {
+			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+
+			var receipt *types.Receipt
 			statedb.SetTxContext(tx.Hash(), i)
 			receipt, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
+
+			receipts = append(receipts, receipt)
+			allLogs = append(allLogs, receipt.Logs...)
 		}
-		receipts = append(receipts, receipt)
-		allLogs = append(allLogs, receipt.Logs...)
 	}
+
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	if err := p.engine.Finalize(p.bc, block, parent, statedb, receipts); err != nil {
 		return nil, nil, 0, fmt.Errorf("engine finalization check failed: %w", err)
