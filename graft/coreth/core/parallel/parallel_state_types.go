@@ -213,6 +213,20 @@ func (w *TxWriteSet) Entries() map[StateObjectKey]StateObjectValue {
 	return out
 }
 
+func (w *TxWriteSet) Clone() *TxWriteSet {
+	if w == nil {
+		return NewTxWriteSet()
+	}
+	out := NewTxWriteSet()
+	for addr, lifecycle := range w.accountLifecycleChanges {
+		out.accountLifecycleChanges[addr] = lifecycle
+	}
+	for key, value := range w.writes {
+		out.writes[key] = cloneStateObjectValue(value)
+	}
+	return out
+}
+
 type TxReadSet struct {
 	accountExistsVersion map[common.Address]ObjectVersion
 	objectVersions       map[StateObjectKey]ObjectVersion
@@ -269,4 +283,25 @@ func cloneU256(value *uint256.Int) *uint256.Int {
 		return nil
 	}
 	return new(uint256.Int).Set(value)
+}
+
+func cloneStateObjectValue(value StateObjectValue) StateObjectValue {
+	cloned := StateObjectValue{
+		balance: cloneU256(value.balance),
+		code:    cloneBytes(value.code),
+		extra:   value.extra,
+	}
+	if value.nonce != nil {
+		v := *value.nonce
+		cloned.nonce = &v
+	}
+	if value.codeHash != nil {
+		v := *value.codeHash
+		cloned.codeHash = &v
+	}
+	if value.storage != nil {
+		v := *value.storage
+		cloned.storage = &v
+	}
+	return cloned
 }

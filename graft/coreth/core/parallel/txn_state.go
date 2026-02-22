@@ -27,13 +27,25 @@ type TxnState struct {
 	writeSet *TxWriteSet
 	readSet  *TxReadSet
 
+	// Snapshots for transactional rollback during EVM execution.
+	writeSetSnapshots []txnWriteSetSnapshot
+	writeSetDirty     bool
+
 	// These never have conflicts with other transactions (write-only)
 	// but we need to write them back to block state at the end of transaction execution.
 	logs     []*types.Log
-	logSize  uint
 	preimage map[common.Hash][]byte
 
 	// These are per-transaction
+	refund     uint64
+	transient  state.TransientStorage
+	accessList *state.AccessList
+}
+
+type txnWriteSetSnapshot struct {
+	writeSet   *TxWriteSet
+	logs       []*types.Log
+	preimage   map[common.Hash][]byte
 	refund     uint64
 	transient  state.TransientStorage
 	accessList *state.AccessList
@@ -95,6 +107,7 @@ func (t *TxnState) Finalise(deleteEmptyObjects bool) {
 
 func (t *TxnState) CreateAccount(addr common.Address) {
 	t.writeSet.CreateAccount(addr)
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) SetBalance(addr common.Address, value *uint256.Int) {
@@ -176,6 +189,7 @@ func (t *TxnState) GetCodeSize(addr common.Address) int {
 
 func (t *TxnState) AddRefund(gas uint64) {
 	t.refund += gas
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) SubRefund(gas uint64) {
@@ -183,6 +197,7 @@ func (t *TxnState) SubRefund(gas uint64) {
 		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, t.refund))
 	}
 	t.refund -= gas
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) GetRefund() uint64 {
@@ -225,10 +240,12 @@ func (t *TxnState) GetTransientState(addr common.Address, key common.Hash) commo
 
 func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash) {
 	t.transient.Set(addr, key, value)
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
 	t.writeSet.DestructAccount(addr)
+	t.writeSetDirty = true
 }
 
 // Only checks if an account is marked as self-destructed in the current transaction
@@ -243,6 +260,7 @@ func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
 // call SelfDestruct only if the txn is created in the current transaction
 func (t *TxnState) Selfdestruct6780(addr common.Address) {
 	t.writeSet.DestructAccount6780(addr)
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) Exist(addr common.Address) bool {
@@ -297,10 +315,12 @@ func (t *TxnState) SlotInAccessList(addr common.Address, slot common.Hash) (bool
 
 func (t *TxnState) AddAddressToAccessList(addr common.Address) {
 	t.accessList.AddAddress(addr)
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) AddSlotToAccessList(addr common.Address, slot common.Hash) {
 	t.accessList.AddSlot(addr, slot)
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
@@ -329,23 +349,46 @@ func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, 
 	}
 	// Reset transient storage at the beginning of transaction execution
 	t.transient = state.NewTransientStorage()
+	t.writeSetDirty = true
 }
 
-func (t *TxnState) RevertToSnapshot(_ int) {
-	// TxnState is discarded on conflict or execution failure in this model.
+func (t *TxnState) RevertToSnapshot(i int) {
+	if i < 0 || i > len(t.writeSetSnapshots) {
+		panic(fmt.Errorf("invalid snapshot id %d", i))
+	}
+	if i == 0 {
+		t.writeSet = NewTxWriteSet()
+		t.logs = nil
+		t.preimage = make(map[common.Hash][]byte)
+		t.refund = 0
+		t.transient = state.NewTransientStorage()
+		t.accessList = state.NewAccessList()
+		t.writeSetDirty = false
+		return
+	}
+	snapshot := t.writeSetSnapshots[i-1]
+	t.writeSet = snapshot.writeSet.Clone()
+	t.logs = copyLogs(snapshot.logs)
+	t.preimage = copyPreimages(snapshot.preimage)
+	t.refund = snapshot.refund
+	t.transient = snapshot.transient.Copy()
+	t.accessList = snapshot.accessList.Copy()
+	t.writeSetDirty = false
 }
 
 func (t *TxnState) Snapshot() int {
-	// Snapshot/Revert is intentionally unused in this model.
-	return 0
+	if t.writeSetDirty {
+		t.writeSetSnapshots = append(t.writeSetSnapshots, t.captureWriteSetSnapshot())
+	}
+	t.writeSetDirty = false
+	return len(t.writeSetSnapshots)
 }
 
 func (t *TxnState) AddLog(log *types.Log) {
 	log.TxHash = t.txHash
 	log.TxIndex = uint(t.txIndex)
-	log.Index = t.logSize
 	t.logs = append(t.logs, log)
-	t.logSize++
+	t.writeSetDirty = true
 }
 
 func (t *TxnState) AddPreimage(hash common.Hash, preimage []byte) {
@@ -355,6 +398,7 @@ func (t *TxnState) AddPreimage(hash common.Hash, preimage []byte) {
 	copyPreimage := make([]byte, len(preimage))
 	copy(copyPreimage, preimage)
 	t.preimage[hash] = copyPreimage
+	t.writeSetDirty = true
 }
 
 // called only when finalizing a transaction - and only on the txn itself
@@ -442,4 +486,38 @@ func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
 		t.CreateAccount(key.Address)
 	}
 	t.writeSet.Set(key, value)
+	t.writeSetDirty = true
+}
+
+func (t *TxnState) captureWriteSetSnapshot() txnWriteSetSnapshot {
+	return txnWriteSetSnapshot{
+		writeSet:   t.writeSet.Clone(),
+		logs:       copyLogs(t.logs),
+		preimage:   copyPreimages(t.preimage),
+		refund:     t.refund,
+		transient:  t.transient.Copy(),
+		accessList: t.accessList.Copy(),
+	}
+}
+
+func copyLogs(logs []*types.Log) []*types.Log {
+	if len(logs) == 0 {
+		return nil
+	}
+	out := make([]*types.Log, len(logs))
+	for i, entry := range logs {
+		entryCopy := *entry
+		out[i] = &entryCopy
+	}
+	return out
+}
+
+func copyPreimages(preimages map[common.Hash][]byte) map[common.Hash][]byte {
+	out := make(map[common.Hash][]byte, len(preimages))
+	for hash, image := range preimages {
+		copyImage := make([]byte, len(image))
+		copy(copyImage, image)
+		out[hash] = copyImage
+	}
+	return out
 }

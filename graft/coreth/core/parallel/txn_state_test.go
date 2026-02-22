@@ -205,3 +205,125 @@ func TestTxnStateStorageReadUsesCanonicalizedKey(t *testing.T) {
 		t.Fatalf("expected transformed key %v, got %v", StorageKey(addr, transformedSlot), base.lastReadKey)
 	}
 }
+
+func TestTxnStateSnapshotDirtyBitAndIndices(t *testing.T) {
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	addr := common.HexToAddress("0xabc")
+
+	if snap := tx.Snapshot(); snap != 0 {
+		t.Fatalf("expected empty snapshot index 0, got %d", snap)
+	}
+
+	tx.SetBalance(addr, uint256.NewInt(1))
+	if snap := tx.Snapshot(); snap != 1 {
+		t.Fatalf("expected first dirty snapshot index 1, got %d", snap)
+	}
+
+	if snap := tx.Snapshot(); snap != 1 {
+		t.Fatalf("expected unchanged snapshot index 1, got %d", snap)
+	}
+
+	tx.SetNonce(addr, 2)
+	if snap := tx.Snapshot(); snap != 2 {
+		t.Fatalf("expected second dirty snapshot index 2, got %d", snap)
+	}
+}
+
+func TestTxnStateRevertToSnapshotRestoresWriteSetAndTxnLocalData(t *testing.T) {
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1111"), 7, 0)
+	addr := common.HexToAddress("0xabcd")
+	slot := common.HexToHash("0x1")
+	log1 := &types.Log{Address: addr}
+	log2 := &types.Log{Address: common.HexToAddress("0xbeef")}
+	preimage1Key := common.HexToHash("0x11")
+	preimage2Key := common.HexToHash("0x22")
+
+	tx.SetBalance(addr, uint256.NewInt(10))
+	tx.SetState(addr, slot, common.HexToHash("0xaa"))
+	tx.AddRefund(9)
+	tx.SetTransientState(addr, slot, common.HexToHash("0x31"))
+	tx.AddAddressToAccessList(addr)
+	tx.AddLog(log1)
+	tx.AddPreimage(preimage1Key, []byte{0x01})
+	snap := tx.Snapshot()
+	if snap != 1 {
+		t.Fatalf("expected snapshot id 1, got %d", snap)
+	}
+
+	tx.SetBalance(addr, uint256.NewInt(20))
+	tx.SetState(addr, slot, common.HexToHash("0xbb"))
+	tx.AddRefund(3)
+	tx.SetTransientState(addr, slot, common.HexToHash("0x32"))
+	tx.AddSlotToAccessList(addr, slot)
+	tx.AddLog(log2)
+	tx.AddPreimage(preimage2Key, []byte{0x02})
+
+	tx.RevertToSnapshot(snap)
+
+	if got := tx.GetBalance(addr); got.Cmp(uint256.NewInt(10)) != 0 {
+		t.Fatalf("unexpected balance after revert: %s", got)
+	}
+	if got := tx.GetState(addr, slot); got != common.HexToHash("0xaa") {
+		t.Fatalf("unexpected storage after revert: %s", got)
+	}
+	if got := tx.GetRefund(); got != 9 {
+		t.Fatalf("unexpected refund after revert: %d", got)
+	}
+	if got := tx.GetTransientState(addr, slot); got != common.HexToHash("0x31") {
+		t.Fatalf("unexpected transient value after revert: %s", got)
+	}
+	if present := tx.AddressInAccessList(addr); !present {
+		t.Fatalf("expected address to remain in access list after revert")
+	}
+	if _, slotPresent := tx.SlotInAccessList(addr, slot); slotPresent {
+		t.Fatalf("expected slot access-list entry to be reverted")
+	}
+	logs := tx.GetLogs(tx.TxHash(), 1, common.HexToHash("0x1"))
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log after revert, got %d", len(logs))
+	}
+	if len(tx.Preimages()) != 1 {
+		t.Fatalf("expected 1 preimage after revert, got %d", len(tx.Preimages()))
+	}
+	if _, exists := tx.Preimages()[preimage2Key]; exists {
+		t.Fatalf("unexpected second preimage after revert")
+	}
+}
+
+func TestTxnStateRevertToZeroSnapshotResetsTrackedState(t *testing.T) {
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2222"), 3, 0)
+	addr := common.HexToAddress("0x1234")
+	slot := common.HexToHash("0x7")
+
+	tx.SetBalance(addr, uint256.NewInt(5))
+	tx.SetState(addr, slot, common.HexToHash("0xcc"))
+	tx.AddRefund(4)
+	tx.SetTransientState(addr, slot, common.HexToHash("0x44"))
+	tx.AddAddressToAccessList(addr)
+	tx.AddLog(&types.Log{Address: addr})
+	tx.AddPreimage(common.HexToHash("0x1"), []byte{0x99})
+
+	tx.RevertToSnapshot(0)
+
+	if got := tx.GetBalance(addr); !got.IsZero() {
+		t.Fatalf("expected zero balance after revert to 0, got %s", got)
+	}
+	if got := tx.GetState(addr, slot); got != (common.Hash{}) {
+		t.Fatalf("expected empty storage after revert to 0, got %s", got)
+	}
+	if got := tx.GetRefund(); got != 0 {
+		t.Fatalf("expected zero refund after revert to 0, got %d", got)
+	}
+	if got := tx.GetTransientState(addr, slot); got != (common.Hash{}) {
+		t.Fatalf("expected empty transient after revert to 0, got %s", got)
+	}
+	if present := tx.AddressInAccessList(addr); present {
+		t.Fatalf("expected access list reset after revert to 0")
+	}
+	if got := tx.GetLogs(tx.TxHash(), 1, common.HexToHash("0x1")); len(got) != 0 {
+		t.Fatalf("expected no logs after revert to 0, got %d", len(got))
+	}
+	if got := tx.Preimages(); len(got) != 0 {
+		t.Fatalf("expected no preimages after revert to 0, got %d", len(got))
+	}
+}
