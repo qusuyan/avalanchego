@@ -438,7 +438,8 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 }
 
 func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
-	if t.Exist(key.Address) {
-		t.writeSet.Set(key, value)
+	if !t.Exist(key.Address) {
+		t.CreateAccount(key.Address)
 	}
+	t.writeSet.Set(key, value)
 }
