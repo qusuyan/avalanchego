@@ -328,49 +328,61 @@ func TestTxnStateRevertToZeroSnapshotResetsTrackedState(t *testing.T) {
 	}
 }
 
-func TestRevert(t *testing.T) {
+func TestTxnStateSnapshotRevertPreservesSnapshotLineage(t *testing.T) {
 	addr1 := common.HexToAddress("0xabc")
 	addr2 := common.HexToAddress("0xdef")
 
 	txn := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
 	txn.AddAddressToAccessList(addr1)
 
-	snapshot0 := txn.Snapshot()
-	txn.AddLog(&types.Log{})
-	// first snapshot - this will be what we revert to
 	snapshot1 := txn.Snapshot()
-	if snapshot0 >= snapshot1 {
-		t.Fatalf("expected different snapshot indices for snapshot0 and snapshot1, got %d", snapshot0)
+	if snapshot1 != 1 {
+		t.Fatalf("expected first snapshot index 1, got %d", snapshot1)
 	}
+
 	txn.AddLog(&types.Log{})
 	snapshot2 := txn.Snapshot()
-	if snapshot1 >= snapshot2 {
-		t.Fatalf("expected different snapshot indices for snapshot1 and snapshot2, got %d", snapshot2)
+	if snapshot2 != 2 {
+		t.Fatalf("expected second snapshot index 2, got %d", snapshot2)
 	}
-	// add item
+
+	txn.AddLog(&types.Log{})
 	txn.AddAddressToAccessList(addr2)
-	// new snapshot - we will revert to this at the end
 	snapshot3 := txn.Snapshot()
-	if snapshot2 >= snapshot3 {
-		t.Fatalf("expected different snapshot indices for snapshot2 and snapshot3, got %d", snapshot3)
+	if snapshot3 != 3 {
+		t.Fatalf("expected third snapshot index 3, got %d", snapshot3)
 	}
-	// added item should be gone
-	txn.RevertToSnapshot(2)
+
+	txn.RevertToSnapshot(snapshot2)
+	if !txn.AddressInAccessList(addr1) {
+		t.Fatalf("expected addr1 to remain in access list after revert")
+	}
+	if txn.AddressInAccessList(addr2) {
+		t.Fatalf("expected addr2 to be removed from access list after revert")
+	}
+	if got := len(txn.GetLogs(txn.TxHash(), 1, common.HexToHash("0x1"))); got != 1 {
+		t.Fatalf("expected exactly one log after revert to snapshot2, got %d", got)
+	}
+
 	snapshot4 := txn.Snapshot()
-	if snapshot3 > snapshot4 {
-		t.Fatalf("expected different snapshot indices for snapshot3 and snapshot4, got %d", snapshot4)
+	if snapshot4 != 4 {
+		t.Fatalf("expected snapshot index 4 after reverting and snapshotting again, got %d", snapshot4)
 	}
+
 	txn.AddLog(&types.Log{})
 	snapshot5 := txn.Snapshot()
-	if snapshot4 >= snapshot5 {
-		t.Fatalf("expected different snapshot indices for snapshot4 and snapshot5, got %d", snapshot5)
+	if snapshot5 != 5 {
+		t.Fatalf("expected snapshot index 5 after additional mutation, got %d", snapshot5)
 	}
 
 	txn.RevertToSnapshot(snapshot4)
 	if !txn.AddressInAccessList(addr1) {
-		t.Fatalf("expected addr1 to be in access list after revert to snapshot1")
+		t.Fatalf("expected addr1 to remain in access list after reverting to snapshot4")
 	}
 	if txn.AddressInAccessList(addr2) {
-		t.Fatalf("expected addr2 to not be in access list after revert to snapshot1")
+		t.Fatalf("expected addr2 to be absent after reverting to snapshot4")
+	}
+	if got := len(txn.GetLogs(txn.TxHash(), 1, common.HexToHash("0x1"))); got != 1 {
+		t.Fatalf("expected exactly one log after reverting to snapshot4, got %d", got)
 	}
 }

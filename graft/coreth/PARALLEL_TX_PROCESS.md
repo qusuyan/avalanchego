@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-20
+Last updated: 2026-02-23
 
 ## Scope
 
@@ -9,6 +9,89 @@ This document summarizes:
 1. The current serial execution path in this workspace.
 2. The agreed target direction for parallel transaction execution.
 3. Key constraints and open decisions to pick up later.
+
+## Progress Update (2026-02-23)
+
+### Completed Since Last Update
+
+1. Reviewed recent parallel-path bugfix commits and validated the latest behavior changes:
+- `b88540c75`: state-read options wiring and cross-tx overlay read visibility fixes
+- `c3bdf06d5`: storage-key canonicalization plumbing in `TxnState`
+- `daac39ac9`: create-account-on-write safety path
+- `1310739fb`: snapshot/revert lineage and dirty-bit behavior fixups
+
+2. Polished snapshot/revert regression coverage in `txn_state_test.go`:
+- replaced ad-hoc `TestRevert` with `TestTxnStateSnapshotRevertPreservesSnapshotLineage`
+- added explicit assertions for snapshot index progression
+- added state-shape assertions (access list and tx-local logs) across revert/snapshot cycles
+
+### Current Status
+
+1. Snapshot/revert lineage behavior now has clearer, stronger regression assertions.
+2. Parallel path bugfix context has been consolidated in this progress log for follow-on work.
+
+## Progress Update (2026-02-21)
+
+### Completed Since Last Update
+
+1. Integrated block-scoped `StateDBLastWriterBlockState` into the `StateProcessor` parallel path:
+- pre-collect tx hashes
+- run per-tx execution via `TxnState.CommitTxn()`
+- apply `blockState.WriteBack()` before `Finalize`
+
+2. Extended `BlockState` with explicit `WriteBack() error` and wired concrete implementations.
+
+3. Added last-writer-wins canonical merge behavior in `StateDBLastWriterBlockState`:
+- tx-index/version-aware object writes
+- account existence/lifecycle tracking in canonical overlay
+- clearing stale per-address object overlay entries on create lifecycle merge
+
+4. Added deterministic tx-indexed buffering and replay for write-only tx-local outputs:
+- logs are stored by tx index and replayed with `SetTxContext(txHash, txIndex)`
+- preimages are stored by tx index and written back in canonical tx order
+
+5. Hardened TxnState storage handling:
+- canonicalize storage keys at `TxnState` entry points (`GetState`, `SetState`, `GetCommittedState`)
+- use transformed storage keys consistently in read/write tracking
+- ensure parallel block-state reads/writes to underlying `StateDB` use `SkipStateKeyTransformation()` to avoid double transforms
+
+6. Fixed cross-tx read visibility and state-read option plumbing:
+- tx reads now correctly observe writes from previous committed txs in block overlay
+- state read options are threaded correctly where needed
+
+7. Refined tx-local lifecycle behavior:
+- create account on write when needed
+- preserve lifecycle tracking semantics for self-destruct/create interaction in `TxWriteSet`
+
+8. Expanded parallel tests for canonicalized storage behavior and wiring correctness.
+
+### Follow-up Update (2026-02-22)
+
+1. Re-enabled functional `TxnState` snapshot/revert behavior (not no-op anymore):
+- `TxnState` now tracks snapshot history of write-set state and a dirty bit
+- `Snapshot()` appends a deep copy only when dirty, clears dirty, and returns snapshot count
+- `RevertToSnapshot(i)` restores snapshot `i-1` (or empty write-set state for `i=0`)
+
+2. Snapshot scope includes tx-local state required for correct EVM rollback semantics:
+- tracked write-set (`TxWriteSet`)
+- tx-local/write-only outputs (`logs`, `logSize`, `preimages`)
+- per-tx local state (`refund`, `transient`, `accessList`)
+
+3. Added cloning utilities and tests to ensure snapshot isolation and deterministic rollback behavior.
+
+### Current Status
+
+1. Parallel path uses block-scoped canonical overlay state with explicit ordered writeback.
+2. Txn-local snapshot/revert semantics are implemented for EVM execution compatibility.
+3. Read-set validation remains placeholder (`ValidateReadSet(...)` currently returns `true`).
+4. Scheduler-managed parallel run/validate/retry pipeline is still pending.
+
+### Next Work Items
+
+1. Implement real `ValidateReadSet(...)` against canonical versions in `StateDBLastWriterBlockState`.
+2. Add focused conflict tests that exercise re-run paths with read-version mismatches.
+3. Validate lifecycle parity (`SelfDestruct`, EIP-6780, destroy/recreate sequences) against serial `StateDB` behavior.
+4. Continue scheduler/coordinator implementation for ordered validate/commit with retries.
 
 ## Progress Update (2026-02-20)
 
