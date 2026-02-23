@@ -28,7 +28,7 @@ type TxnState struct {
 	readSet  *TxReadSet
 
 	// Snapshots for transactional rollback during EVM execution.
-	writeSetSnapshots []txnWriteSetSnapshot
+	writeSetSnapshots []*txnWriteSetSnapshot
 	writeSetDirty     bool
 
 	// These never have conflicts with other transactions (write-only)
@@ -314,13 +314,15 @@ func (t *TxnState) SlotInAccessList(addr common.Address, slot common.Hash) (bool
 }
 
 func (t *TxnState) AddAddressToAccessList(addr common.Address) {
-	t.accessList.AddAddress(addr)
-	t.writeSetDirty = true
+	if t.accessList.AddAddress(addr) {
+		t.writeSetDirty = true
+	}
 }
 
 func (t *TxnState) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	t.accessList.AddSlot(addr, slot)
-	t.writeSetDirty = true
+	if addrAdded, slotAdded := t.accessList.AddSlot(addr, slot); addrAdded || slotAdded {
+		t.writeSetDirty = true
+	}
 }
 
 func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
@@ -356,7 +358,7 @@ func (t *TxnState) RevertToSnapshot(i int) {
 	if i < 0 || i > len(t.writeSetSnapshots) {
 		panic(fmt.Errorf("invalid snapshot id %d", i))
 	}
-	if i == 0 {
+	if i == 0 || t.writeSetSnapshots[i-1] == nil {
 		t.writeSet = NewTxWriteSet()
 		t.logs = nil
 		t.preimage = make(map[common.Hash][]byte)
@@ -364,6 +366,7 @@ func (t *TxnState) RevertToSnapshot(i int) {
 		t.transient = state.NewTransientStorage()
 		t.accessList = state.NewAccessList()
 		t.writeSetDirty = false
+		t.writeSetSnapshots = append(t.writeSetSnapshots, nil)
 		return
 	}
 	snapshot := t.writeSetSnapshots[i-1]
@@ -374,6 +377,7 @@ func (t *TxnState) RevertToSnapshot(i int) {
 	t.transient = snapshot.transient.Copy()
 	t.accessList = snapshot.accessList.Copy()
 	t.writeSetDirty = false
+	t.writeSetSnapshots = append(t.writeSetSnapshots, snapshot)
 }
 
 func (t *TxnState) Snapshot() int {
@@ -489,8 +493,8 @@ func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
 	t.writeSetDirty = true
 }
 
-func (t *TxnState) captureWriteSetSnapshot() txnWriteSetSnapshot {
-	return txnWriteSetSnapshot{
+func (t *TxnState) captureWriteSetSnapshot() *txnWriteSetSnapshot {
+	return &txnWriteSetSnapshot{
 		writeSet:   t.writeSet.Clone(),
 		logs:       copyLogs(t.logs),
 		preimage:   copyPreimages(t.preimage),
