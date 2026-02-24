@@ -1,6 +1,8 @@
 package parallel
 
 import (
+	"fmt"
+
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/holiman/uint256"
@@ -159,6 +161,7 @@ func NewTxWriteSet() *TxWriteSet {
 
 // Add tracks that a key was written. Prefer Set for writes with value.
 func (w *TxWriteSet) CreateAccount(addr common.Address) {
+	fmt.Printf("createObject(%x)\n", addr)
 	if w.accountLifecycleChanges == nil {
 		w.accountLifecycleChanges = make(map[common.Address]AccountLifecycle)
 	}

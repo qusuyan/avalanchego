@@ -220,16 +220,19 @@ func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash,
 
 func (t *TxnState) GetState(addr common.Address, key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
 	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	state := common.Hash{}
 	if value, err := t.read(StorageKey(addr, canonicalKey)); err == nil {
 		if storageValue, ok := value.Storage(); ok {
-			return storageValue
+			state = storageValue
 		}
 	}
-	return common.Hash{}
+	fmt.Printf("GetState(%x, %x) -> %x\n", addr, canonicalKey, state)
+	return state
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, opt ...stateconf.StateDBStateOption) {
 	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	fmt.Printf("SetState(%x, %x) -> %x\n", addr, canonicalKey, value)
 	t.write(StorageKey(addr, canonicalKey), NewStorageValue(value))
 }
 
@@ -244,6 +247,7 @@ func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
+	fmt.Printf("SelfDestruct(%x)\n", addr)
 	t.writeSet.DestructAccount(addr)
 	t.writeSetDirty = true
 }
@@ -264,6 +268,10 @@ func (t *TxnState) Selfdestruct6780(addr common.Address) {
 }
 
 func (t *TxnState) Exist(addr common.Address) bool {
+	return t.exist(addr)
+}
+
+func (t *TxnState) exist(addr common.Address) bool {
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
 		if op == lifecycleCreated {
 			return true
@@ -282,7 +290,7 @@ func (t *TxnState) Exist(addr common.Address) bool {
 }
 
 func (t *TxnState) Empty(addr common.Address) bool {
-	if !t.Exist(addr) {
+	if !t.exist(addr) {
 		return true
 	}
 	// 1. check if the balance is zero
@@ -475,7 +483,7 @@ func (t *TxnState) readFromBase(key StateObjectKey) (*VersionedValue, error) {
 // TODO: we need to change StateDB interface so that we can propagate mismatching state reads up to the EVM execution for early termination.
 // For now we just keep the first read version so that it will fail the validation check
 func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
-	if !t.Exist(key.Address) {
+	if !t.exist(key.Address) {
 		return nil, fmt.Errorf("account does not exist: %v", key.Address)
 	}
 	if value, ok := t.writeSet.Get(key); ok {
@@ -486,8 +494,8 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 }
 
 func (t *TxnState) write(key StateObjectKey, value StateObjectValue) {
-	if !t.Exist(key.Address) {
-		t.CreateAccount(key.Address)
+	if !t.exist(key.Address) {
+		t.writeSet.CreateAccount(key.Address)
 	}
 	t.writeSet.Set(key, value)
 	t.writeSetDirty = true
