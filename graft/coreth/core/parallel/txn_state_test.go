@@ -24,7 +24,7 @@ type recordingBlockState struct {
 }
 
 func (b *recordingBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
-	return true, COMMITTED_VERSION, nil
+	return false, COMMITTED_VERSION, nil
 }
 
 func (b *recordingBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
@@ -52,7 +52,7 @@ func (b *recordingBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOpt
 }
 
 func (testBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
-	return true, COMMITTED_VERSION, nil
+	return false, COMMITTED_VERSION, nil
 }
 
 func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
@@ -384,5 +384,26 @@ func TestTxnStateSnapshotRevertPreservesSnapshotLineage(t *testing.T) {
 	}
 	if got := len(txn.GetLogs(txn.TxHash(), 1, common.HexToHash("0x1"))); got != 1 {
 		t.Fatalf("expected exactly one log after reverting to snapshot4, got %d", got)
+	}
+}
+
+func TestTxnExistsCreatAfterDestruct(t *testing.T) {
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	addr := common.HexToAddress("0xabc")
+
+	tx.CreateAccount(addr)
+	if !tx.Exist(addr) {
+		t.Fatalf("expected account to exist after create")
+	}
+
+	tx.SetCode(addr, []byte{0x1a, 0x2b})
+
+	tx.SelfDestruct(addr)
+	if !tx.Exist(addr) {
+		t.Fatalf("expected account to still exist after selfdestruct")
+	}
+
+	if tx.GetCodeSize(addr) != 2 {
+		t.Fatalf("expected code size to still be 2 after selfdestruct, got %d", tx.GetCodeSize(addr))
 	}
 }

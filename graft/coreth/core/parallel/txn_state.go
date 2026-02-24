@@ -259,7 +259,7 @@ func (t *TxnState) SelfDestruct(addr common.Address) {
 // If the account is destructed in another transaction, it is marked deleted and will not be considered HasSelfDestructed
 func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
-		return op == lifecycleDestructed
+		return op == lifecycleDestructed || op == lifecycleCreatedAndDestructed
 	}
 	return false // accounts that do not exist in the first place are not considered self-destructed
 }
@@ -276,7 +276,7 @@ func (t *TxnState) Exist(addr common.Address) bool {
 
 func (t *TxnState) exist(addr common.Address) bool {
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
-		if op == lifecycleCreated {
+		if op == lifecycleCreated || op == lifecycleCreatedAndDestructed {
 			return true
 		}
 		// a self-destructed account is considered existing until the end of block execution - we should query BlockState if the account exists
@@ -286,8 +286,8 @@ func (t *TxnState) exist(addr common.Address) bool {
 		return false
 	}
 	if t.readSet.RecordAccountExistence(addr, version) != nil {
-		// existence read inconsistent with previous read - early terminate
-		return false
+		// TODO: existence read inconsistent with previous read - early terminate
+		return exists
 	}
 	return exists
 }
