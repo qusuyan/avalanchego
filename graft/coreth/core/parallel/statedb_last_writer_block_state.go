@@ -316,6 +316,7 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		}
 		return true
 	})
+	b.existsStates = sync.Map{} // clear existence states after materialization
 
 	// Apply object last-writer-wins state.
 	b.objectStates.Range(func(k, v any) bool {
@@ -349,6 +350,7 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		}
 		return true
 	})
+	b.objectStates = sync.Map{} // clear object states after materialization
 
 	// Apply logs and preimages in tx-index order.
 	for i := range b.logsByTx {
@@ -362,6 +364,7 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 			}
 		}
 	}
+	b.logsByTx = make([]atomic.Pointer[txLogs], len(b.logsByTx)) // clear logs after materialization
 
 	for i := range b.preimagesByTx {
 		preimages := b.preimagesByTx[i].Load()
@@ -371,8 +374,11 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 			}
 		}
 	}
+	b.preimagesByTx = make([]atomic.Pointer[txPreimages], len(b.preimagesByTx)) // clear preimages after materialization
 
 	b.statedb.SetError(b.dbErr)
+	b.dbErr = nil // clear error after materialization
+
 	b.statedb.Finalise(true)
 	return nil
 }

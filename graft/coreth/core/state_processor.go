@@ -121,12 +121,14 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 			if err := txState.CommitTxn(); err != nil {
 				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
-			fmt.Printf("Used Gas: %d\n", receipt.GasUsed)
+			if err := blockState.WriteBack(); err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
+			}
+			postState := statedb.IntermediateRoot(p.config.IsEIP158(blockNumber)).Bytes()
+			fmt.Printf("Used Gas: %d, Post State: %x\n", receipt.GasUsed, postState)
+			receipt.PostState = postState
 			receipts = append(receipts, receipt)
 			allLogs = append(allLogs, receipt.Logs...)
-		}
-		if err := blockState.WriteBack(); err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
 		}
 	} else {
 		for i, tx := range block.Transactions() {
@@ -143,7 +145,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 
-			fmt.Printf("Used Gas: %d\n", receipt.GasUsed)
+			fmt.Printf("Used Gas: %d, Post State: %x\n", receipt.GasUsed, receipt.PostState)
 			receipts = append(receipts, receipt)
 			allLogs = append(allLogs, receipt.Logs...)
 		}
