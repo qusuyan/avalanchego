@@ -173,6 +173,7 @@ func (t *TxnState) GetCode(addr common.Address) []byte {
 }
 
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
+	fmt.Printf("SetCode(%x) -> %d\n", addr, len(code))
 	codeHash := crypto.Keccak256Hash(code)
 	t.write(CodeKey(addr), NewCodeValue(code))
 	t.write(CodeHashKey(addr), NewCodeHashValue(codeHash))
@@ -365,6 +366,7 @@ func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, 
 }
 
 func (t *TxnState) RevertToSnapshot(i int) {
+	fmt.Printf("RevertToSnapshot(%x)\n", i)
 	if i < 0 || i > len(t.writeSetSnapshots) {
 		panic(fmt.Errorf("invalid snapshot id %d", i))
 	}
@@ -395,6 +397,7 @@ func (t *TxnState) Snapshot() int {
 		t.writeSetSnapshots = append(t.writeSetSnapshots, t.captureWriteSetSnapshot())
 	}
 	t.writeSetDirty = false
+	fmt.Printf("Snapshot() -> %d\n", len(t.writeSetSnapshots))
 	return len(t.writeSetSnapshots)
 }
 
