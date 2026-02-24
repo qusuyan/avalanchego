@@ -275,8 +275,8 @@ func (t *TxnState) Exist(addr common.Address) bool {
 		return false
 	}
 	if t.readSet.RecordAccountExistence(addr, version) != nil {
-		// existence read inconsistent with previous read - early terminate
-		return false
+		// TODO: existence read inconsistent with previous read - early terminate
+		return exists
 	}
 	return exists
 }
