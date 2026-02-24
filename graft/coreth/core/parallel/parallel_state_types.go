@@ -150,6 +150,19 @@ const (
 	// and create will not change balance.
 )
 
+func (l AccountLifecycle) String() string {
+	switch l {
+	case lifecycleCreated:
+		return "created"
+	case lifecycleDestructed:
+		return "destructed"
+	case lifecycleCreatedAndDestructed:
+		return "createdAndDestructed"
+	default:
+		return "unknown"
+	}
+}
+
 // TxWriteSet captures keys mutated during a tx run and their new values.
 type TxWriteSet struct {
 	accountLifecycleChanges map[common.Address]AccountLifecycle

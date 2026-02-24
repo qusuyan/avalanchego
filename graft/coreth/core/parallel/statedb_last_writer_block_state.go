@@ -230,12 +230,14 @@ func (b *StateDBLastWriterBlockState) Logs() []*types.Log {
 }
 
 func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion, ws *TxWriteSet) error {
+	fmt.Printf("ApplyWriteSet for version %d\n", version)
 	if ws == nil {
 		return nil
 	}
 
 	// Resolve existence/lifecycle first.
 	for addr, lifecycle := range ws.accountLifecycleChanges {
+		fmt.Printf("\tLifecycle: %x, %s\n", addr, lifecycle.String())
 		switch lifecycle {
 		case lifecycleCreated:
 			if !b.storeExistsLWW(addr, ExistsState{Exists: true, Version: version}) {
@@ -255,8 +257,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 
 	// Resolve object writes next.
 	for key, write := range ws.Entries() {
-		// If this account is destructed at same or newer version, ignore
-		// non-balance writes from this merge.
+		// If this account is destructed at same or newer version, ignore non-balance writes from this merge.
 		if exists := b.loadExistsState(key.Address); exists != nil && !exists.Exists && exists.Version >= version {
 			if key.Kind != StateObjectBalance {
 				continue
