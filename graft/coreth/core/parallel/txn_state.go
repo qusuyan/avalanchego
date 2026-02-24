@@ -179,12 +179,14 @@ func (t *TxnState) SetCode(addr common.Address, code []byte) {
 }
 
 func (t *TxnState) GetCodeSize(addr common.Address) int {
+	ret := 0
 	if value, err := t.read(CodeKey(addr)); err == nil {
 		if code, ok := value.Code(); ok {
-			return len(code)
+			ret = len(code)
 		}
 	}
-	return 0
+	fmt.Printf("GetCodeSize(%x) -> %d\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) AddRefund(gas uint64) {
