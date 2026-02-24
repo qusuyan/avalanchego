@@ -12,8 +12,8 @@ import (
 )
 
 type ExistsState struct {
-	Lifecycle AccountLifecycle
-	Version   ObjectVersion
+	Exists  bool
+	Version ObjectVersion
 }
 
 type txLogs struct {
@@ -162,12 +162,7 @@ func (b *StateDBLastWriterBlockState) Error() error {
 
 func (b *StateDBLastWriterBlockState) Exists(addr common.Address) (bool, ObjectVersion, error) {
 	if entry := b.loadExistsState(addr); entry != nil {
-		switch entry.Lifecycle {
-		case lifecycleCreated:
-			return true, entry.Version, nil
-		case lifecycleDestructed:
-			return false, entry.Version, nil
-		}
+		return entry.Exists, entry.Version, nil
 	}
 	if b.statedb == nil {
 		return false, ERROR_VERSION, fmt.Errorf("nil base state")
@@ -243,15 +238,15 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 	for addr, lifecycle := range ws.accountLifecycleChanges {
 		switch lifecycle {
 		case lifecycleCreated:
-			if !b.storeExistsLWW(addr, ExistsState{Lifecycle: lifecycleCreated, Version: version}) {
+			if !b.storeExistsLWW(addr, ExistsState{Exists: true, Version: version}) {
 				// A newer version already exists; skip stale lifecycle.
 				continue
 			}
 			// Creation starts a fresh object epoch for the account.
 			// Keep balance to match TxWriteSet.CreateAccount semantics.
 			b.clearAddressObjectsUpToVersion(addr, version, true)
-		case lifecycleDestructed:
-			if !b.storeExistsLWW(addr, ExistsState{Lifecycle: lifecycleDestructed, Version: version}) {
+		case lifecycleDestructed | lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exists.
+			if !b.storeExistsLWW(addr, ExistsState{Exists: false, Version: version}) {
 				// A newer version already exists; skip stale lifecycle.
 				continue
 			}
@@ -262,7 +257,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 	for key, write := range ws.Entries() {
 		// If this account is destructed at same or newer version, ignore
 		// non-balance writes from this merge.
-		if exists := b.loadExistsState(key.Address); exists != nil && exists.Lifecycle == lifecycleDestructed && exists.Version >= version {
+		if exists := b.loadExistsState(key.Address); exists != nil && !exists.Exists && exists.Version >= version {
 			if key.Kind != StateObjectBalance {
 				continue
 			}
@@ -314,9 +309,9 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		if value == nil {
 			return true
 		}
-		if value.Lifecycle == lifecycleCreated {
+		if value.Exists {
 			b.statedb.CreateAccount(addr)
-		} else if value.Lifecycle == lifecycleDestructed {
+		} else {
 			b.statedb.SelfDestruct(addr)
 		}
 		return true
