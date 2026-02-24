@@ -106,6 +106,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		}
 		blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
 		for i, tx := range block.Transactions() {
+			fmt.Printf("Executing Txn %d\n", i)
 			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -120,7 +121,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 			if err := txState.CommitTxn(); err != nil {
 				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
-
+			fmt.Printf("Used Gas: %d\n", receipt.GasUsed)
 			receipts = append(receipts, receipt)
 			allLogs = append(allLogs, receipt.Logs...)
 		}
@@ -129,6 +130,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		}
 	} else {
 		for i, tx := range block.Transactions() {
+			fmt.Printf("Executing Txn %d\n", i)
 			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -141,6 +143,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 
+			fmt.Printf("Used Gas: %d\n", receipt.GasUsed)
 			receipts = append(receipts, receipt)
 			allLogs = append(allLogs, receipt.Logs...)
 		}
