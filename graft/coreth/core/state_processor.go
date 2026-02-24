@@ -145,7 +145,8 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 
-			fmt.Printf("Used Gas: %d, Post State: %x\n", receipt.GasUsed, receipt.PostState)
+			postState := statedb.IntermediateRoot(p.config.IsEIP158(blockNumber)).Bytes()
+			fmt.Printf("Used Gas: %d, Post State: %x\n", receipt.GasUsed, postState)
 			receipts = append(receipts, receipt)
 			allLogs = append(allLogs, receipt.Logs...)
 		}
