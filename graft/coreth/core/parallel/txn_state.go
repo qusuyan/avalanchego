@@ -481,6 +481,10 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 	if value, ok := t.writeSet.Get(key); ok {
 		return &value, nil
 	}
+	// if created in the current transaction, return empty and do not query block state
+	if t.writeSet.IsCreated(key.Address) && key.Kind != StateObjectBalance {
+		return &StateObjectValue{}, nil
+	}
 	versionedValue, err := t.readFromBase(key)
 	return &versionedValue.Value, err
 }

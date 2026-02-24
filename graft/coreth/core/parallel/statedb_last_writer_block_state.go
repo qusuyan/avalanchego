@@ -328,7 +328,12 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		switch key.Kind {
 		case StateObjectBalance:
 			if balance, ok := objectState.Value.Balance(); ok {
-				b.statedb.SetBalance(key.Address, balance)
+				// We need this special handling for balance writes since we cleared writes for others in ApplyWriteSet
+				if exists := b.loadExistsState(key.Address); exists != nil && !exists.Exists {
+					// Account is destructed in this block - skip its balance
+				} else {
+					b.statedb.SetBalance(key.Address, balance)
+				}
 			}
 		case StateObjectNonce:
 			if nonce, ok := objectState.Value.Nonce(); ok {

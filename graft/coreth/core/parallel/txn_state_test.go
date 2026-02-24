@@ -24,7 +24,7 @@ type recordingBlockState struct {
 }
 
 func (b *recordingBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
-	return false, COMMITTED_VERSION, nil
+	return true, COMMITTED_VERSION, nil
 }
 
 func (b *recordingBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
