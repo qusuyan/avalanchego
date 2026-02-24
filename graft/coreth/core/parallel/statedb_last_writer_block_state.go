@@ -317,7 +317,6 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		}
 		return true
 	})
-	b.existsStates = sync.Map{} // clear existence states after materialization
 
 	// Apply object last-writer-wins state.
 	b.objectStates.Range(func(k, v any) bool {
@@ -330,6 +329,7 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		switch key.Kind {
 		case StateObjectBalance:
 			if balance, ok := objectState.Value.Balance(); ok {
+				// We need this special handling for balance writes since we cleared writes for others in ApplyWriteSet
 				if exists := b.loadExistsState(key.Address); exists != nil && !exists.Exists {
 					// Account is destructed in this block - skip its balance
 				} else {
@@ -355,7 +355,6 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		}
 		return true
 	})
-	b.objectStates = sync.Map{} // clear object states after materialization
 
 	// Apply logs and preimages in tx-index order.
 	for i := range b.logsByTx {
@@ -369,7 +368,6 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 			}
 		}
 	}
-	b.logsByTx = make([]atomic.Pointer[txLogs], len(b.logsByTx)) // clear logs after materialization
 
 	for i := range b.preimagesByTx {
 		preimages := b.preimagesByTx[i].Load()
@@ -379,12 +377,17 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 			}
 		}
 	}
-	b.preimagesByTx = make([]atomic.Pointer[txPreimages], len(b.preimagesByTx)) // clear preimages after materialization
 
 	b.statedb.SetError(b.dbErr)
-	b.dbErr = nil // clear error after materialization
 
 	b.statedb.Finalise(true)
+
+	b.existsStates = sync.Map{}                                                 // clear existence states after materialization
+	b.objectStates = sync.Map{}                                                 // clear object states after materialization
+	b.logsByTx = make([]atomic.Pointer[txLogs], len(b.logsByTx))                // clear logs after materialization
+	b.preimagesByTx = make([]atomic.Pointer[txPreimages], len(b.preimagesByTx)) // clear preimages after materialization
+	b.dbErr = nil                                                               // clear error after materialization
+
 	return nil
 }
 

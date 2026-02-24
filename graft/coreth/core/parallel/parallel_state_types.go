@@ -199,7 +199,7 @@ func (w *TxWriteSet) DestructAccount(addr common.Address) {
 	}
 	// Note: even if the account was created in the same transaction, we still want to mark it as self-destructed,
 	// since CreateAccount can be called on an address with a non-empty account.
-	if lifecycle, exists := w.accountLifecycleChanges[addr]; exists && lifecycle == lifecycleCreated {
+	if w.IsCreated(addr) {
 		w.accountLifecycleChanges[addr] = lifecycleCreatedAndDestructed
 	} else {
 		w.accountLifecycleChanges[addr] = lifecycleDestructed
@@ -215,6 +215,14 @@ func (w *TxWriteSet) DestructAccount6780(addr common.Address) {
 	if lifecycle, exists := w.accountLifecycleChanges[addr]; exists && lifecycle == lifecycleCreated {
 		w.DestructAccount(addr)
 	}
+}
+
+func (w *TxWriteSet) IsCreated(addr common.Address) bool {
+	if w.accountLifecycleChanges == nil {
+		return false
+	}
+	lifecycle, exists := w.accountLifecycleChanges[addr]
+	return exists && (lifecycle == lifecycleCreated || lifecycle == lifecycleCreatedAndDestructed)
 }
 
 func (w *TxWriteSet) Set(key StateObjectKey, value StateObjectValue) {
