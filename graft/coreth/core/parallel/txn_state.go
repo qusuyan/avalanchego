@@ -75,6 +75,14 @@ func (t *TxnState) TxIndex() int {
 	return t.txIndex
 }
 
+func (t *TxnState) ReadSet() *TxReadSet {
+	return t.readSet
+}
+
+func (t *TxnState) WriteSet() *TxWriteSet {
+	return t.writeSet
+}
+
 // Validate is a placeholder for phase-1 direct StateDB wrapping.
 func (t *TxnState) Validate() bool {
 	return true
