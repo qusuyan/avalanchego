@@ -287,8 +287,33 @@ func (b *StateDBLastWriterBlockState) AddPreimages(txIndex int, preimages map[co
 	return nil
 }
 
-func (b *StateDBLastWriterBlockState) ValidateReadSet(_ *TxReadSet) bool {
-	// TODO:
+func (b *StateDBLastWriterBlockState) ValidateReadSet(rs *TxReadSet) bool {
+	if rs == nil {
+		return true
+	}
+
+	for addr, observedVersion := range rs.accountExistsVersion {
+		_, currentVersion, err := b.Exists(addr)
+		if err != nil {
+			b.setError(err)
+			return false
+		}
+		if currentVersion != observedVersion {
+			return false
+		}
+	}
+
+	for key, observedVersion := range rs.objectVersions {
+		current, err := b.Read(key, 0)
+		if err != nil {
+			b.setError(err)
+			return false
+		}
+		if current == nil || current.Version != observedVersion {
+			return false
+		}
+	}
+
 	return true
 }
 

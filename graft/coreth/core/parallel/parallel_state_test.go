@@ -82,3 +82,79 @@ func TestWriteToDestructedAccountShouldNotRecreate(t *testing.T) {
 		t.Fatalf("unexpected balance for destructed account: got %s, want 0", actual)
 	}
 }
+
+func TestValidateReadSetMatchesCurrentVersions(t *testing.T) {
+	txnHash0 := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	db := rawdb.NewMemoryDatabase()
+	tdb := triedb.NewDatabase(db, nil)
+	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	blockState := NewStateDBLastWriterBlockState(statedb, []common.Hash{txnHash0})
+
+	addr := common.HexToAddress("0xcccccccccccccccccccccccccccccccccccccccc")
+	slot := common.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+	key := StorageKey(addr, slot)
+
+	readSet := NewTxReadSet()
+	exists, existsVersion, err := blockState.Exists(addr)
+	if err != nil {
+		t.Fatalf("failed to read existence: %v", err)
+	}
+	if exists {
+		t.Fatalf("expected test account to not exist initially")
+	}
+	if old := readSet.RecordAccountExistence(addr, existsVersion); old != nil {
+		t.Fatalf("unexpected existing version when recording existence")
+	}
+	value, err := blockState.Read(key, 0)
+	if err != nil {
+		t.Fatalf("failed to read object version: %v", err)
+	}
+	if old := readSet.RecordObjectVersion(key, value.Version); old != nil {
+		t.Fatalf("unexpected existing version when recording object")
+	}
+
+	if !blockState.ValidateReadSet(readSet) {
+		t.Fatalf("expected read-set validation to succeed for unchanged versions")
+	}
+}
+
+func TestValidateReadSetDetectsVersionMismatches(t *testing.T) {
+	txnHash0 := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	db := rawdb.NewMemoryDatabase()
+	tdb := triedb.NewDatabase(db, nil)
+	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	blockState := NewStateDBLastWriterBlockState(statedb, []common.Hash{txnHash0})
+
+	addr := common.HexToAddress("0xcccccccccccccccccccccccccccccccccccccccc")
+	slot := common.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+	key := StorageKey(addr, slot)
+
+	// Build a read-set against the initial committed versions.
+	readSet := NewTxReadSet()
+	_, existsVersion, err := blockState.Exists(addr)
+	if err != nil {
+		t.Fatalf("failed to read existence: %v", err)
+	}
+	if old := readSet.RecordAccountExistence(addr, existsVersion); old != nil {
+		t.Fatalf("unexpected existing version when recording existence")
+	}
+	value, err := blockState.Read(key, 0)
+	if err != nil {
+		t.Fatalf("failed to read object version: %v", err)
+	}
+	if old := readSet.RecordObjectVersion(key, value.Version); old != nil {
+		t.Fatalf("unexpected existing version when recording object")
+	}
+
+	// Advance canonical versions via writes.
+	ws := NewTxWriteSet()
+	ws.CreateAccount(addr)
+	ws.Set(key, NewStorageValue(common.HexToHash("0x1")))
+	if err := blockState.ApplyWriteSet(0, 1, ws); err != nil {
+		t.Fatalf("failed to apply write-set: %v", err)
+	}
+
+	if blockState.ValidateReadSet(readSet) {
+		t.Fatalf("expected read-set validation to fail on version mismatch")
+	}
+}
