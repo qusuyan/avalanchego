@@ -32,7 +32,7 @@ type txPreimages struct {
 // Commit materializes the last-writer-wins map into StateDB, then delegates to StateDB.Commit.
 type StateDBLastWriterBlockState struct {
 	statedb *state.StateDB
-	txHashs []common.Hash
+	txHashes []common.Hash
 
 	mu sync.RWMutex
 
@@ -48,12 +48,12 @@ type StateDBLastWriterBlockState struct {
 	preimagesByTx []atomic.Pointer[txPreimages]
 }
 
-func NewStateDBLastWriterBlockState(statedb *state.StateDB, txHashs []common.Hash) *StateDBLastWriterBlockState {
-	numTx := len(txHashs)
+func NewStateDBLastWriterBlockState(statedb *state.StateDB, txHashes []common.Hash) *StateDBLastWriterBlockState {
+	numTx := len(txHashes)
 
 	return &StateDBLastWriterBlockState{
 		statedb:       statedb,
-		txHashs:       txHashs,
+		txHashes:      txHashes,
 		logsByTx:      make([]atomic.Pointer[txLogs], numTx),
 		preimagesByTx: make([]atomic.Pointer[txPreimages], numTx),
 	}
@@ -245,7 +245,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 			// Creation starts a fresh object epoch for the account.
 			// Keep balance to match TxWriteSet.CreateAccount semantics.
 			b.clearAddressObjectsUpToVersion(addr, version, true)
-		case lifecycleDestructed | lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exists.
+		case lifecycleDestructed, lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exist.
 			if !b.storeExistsLWW(addr, ExistsState{Exists: false, Version: version}) {
 				// A newer version already exists; skip stale lifecycle.
 				continue
@@ -382,7 +382,7 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 
 	// Apply logs and preimages in tx-index order.
 	for i := range b.logsByTx {
-		b.statedb.SetTxContext(b.txHashs[i], i)
+		b.statedb.SetTxContext(b.txHashes[i], i)
 		logs := b.logsByTx[i].Load()
 		if logs != nil {
 			for _, entry := range logs.entries {

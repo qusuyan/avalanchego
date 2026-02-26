@@ -110,7 +110,6 @@ func (t *TxnState) Finalise(deleteEmptyObjects bool) {
 	if err := t.CommitTxn(); err != nil {
 		panic(err)
 	}
-	return
 }
 
 func (t *TxnState) CreateAccount(addr common.Address) {
@@ -302,7 +301,7 @@ func (t *TxnState) Empty(addr common.Address) bool {
 		return false
 	}
 	// 3. check if the code hash is empty
-	if bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
+	if !bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
 		return false
 	}
 	// 4. check if extra is empty
@@ -429,7 +428,7 @@ func (t *TxnState) GetLogs(hash common.Hash, blockNumber uint64, blockHash commo
 	return out
 }
 
-// deligate to block state - this is used for testing purposes
+// delegate to block state - this is used for testing purposes
 func (t *TxnState) Logs() []*types.Log {
 	return t.base.Logs()
 }

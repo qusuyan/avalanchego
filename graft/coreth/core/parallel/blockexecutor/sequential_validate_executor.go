@@ -195,3 +195,5 @@ func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.R
 	}
 	return receipts, allLogs, nil
 }
+
+var _ Executor = (*SequentialValidateExecutor)(nil)
