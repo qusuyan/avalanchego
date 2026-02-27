@@ -301,8 +301,8 @@ func (t *TxnState) Empty(addr common.Address) bool {
 	if t.GetNonce(addr) != 0 {
 		return false
 	}
-	// 3. check if the code hash is empty
-	if bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
+	// 3. check if the code is non-empty (non-empty code makes account non-empty)
+	if !bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
 		return false
 	}
 	// 4. check if extra is empty
