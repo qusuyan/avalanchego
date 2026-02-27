@@ -10,48 +10,11 @@ import (
 	"github.com/ava-labs/libevm/core/types"
 )
 
-type txSlot struct {
-	mu                   sync.Mutex
-	ready                bool
-	claimedForValidation bool
-	err                  error
-}
-
-func (s *txSlot) publish(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.err = err
-	s.ready = true
-}
-
-func (s *txSlot) tryClaimValidation() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.ready || s.claimedForValidation {
-		return false
-	}
-	s.claimedForValidation = true
-	return true
-}
-
-func (s *txSlot) unclaimValidation() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.claimedForValidation = false
-}
-
-func (s *txSlot) consumeClaimed() (error, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.ready || !s.claimedForValidation {
-		return nil, false
-	}
-	err := s.err
-	s.ready = false
-	s.claimedForValidation = false
-	s.err = nil
-	return err, true
-}
+const (
+	slotIdle uint32 = iota
+	slotReady
+	slotClaimed
+)
 
 // SequentialValidateExecutor implements:
 // 1) shared worker pool for execute+validate tasks
@@ -63,31 +26,30 @@ type SequentialValidateExecutor struct {
 }
 
 func NewSequentialValidateExecutor(cfg Config) *SequentialValidateExecutor {
-	return &SequentialValidateExecutor{cfg: cfg}
+	return &SequentialValidateExecutor{
+		cfg: cfg,
+	}
 }
 
-func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.Receipts, []*types.Log, error) {
+func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.Receipts, error) {
 	txCount := d.TxCount()
 	if txCount == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 	workers := e.cfg.Workers
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
 
-	slots := make([]txSlot, txCount)
-	receipts := make(types.Receipts, txCount)
-	allLogs := make([]*types.Log, 0)
-
 	var (
 		nextExecToIssue      atomic.Uint64
 		nextValidateToCommit atomic.Uint64
 		runErr               atomic.Pointer[error]
 		stop                 atomic.Bool
-		validationMu         sync.Mutex
 		wg                   sync.WaitGroup
 	)
+	slots := make([]atomic.Uint32, txCount)
+	receipts := make(types.Receipts, txCount)
 
 	storeErr := func(err error) {
 		if err == nil {
@@ -115,69 +77,52 @@ func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.R
 			}
 
 			// Always prioritize validation.
-			if slots[committed].tryClaimValidation() {
-				validationMu.Lock()
-				current := int(nextValidateToCommit.Load())
-				if current != committed {
-					slots[committed].unclaimValidation()
-					validationMu.Unlock()
-					continue
-				}
-
-				execErr, ok := slots[committed].consumeClaimed()
-				if !ok {
-					validationMu.Unlock()
-					continue
-				}
-				if execErr != nil {
-					validationMu.Unlock()
-					storeErr(fmt.Errorf("tx %d speculative execution failed: %w", committed, execErr))
-					return
-				}
-
+			if slots[committed].CompareAndSwap(slotReady, slotClaimed) {
 				valid, err := d.Validate(committed)
 				if err != nil {
-					validationMu.Unlock()
-					storeErr(fmt.Errorf("tx %d validation failed with error: %w", committed, err))
+					storeErr(&TxIndexedError{Index: committed, Err: err})
 					return
 				}
 
 				if valid {
-					receipt, logs, err := d.Commit(committed)
+					receipt, err := d.Commit(committed)
 					if err != nil {
-						validationMu.Unlock()
-						storeErr(fmt.Errorf("tx %d commit failed: %w", committed, err))
+						storeErr(&TxIndexedError{Index: committed, Err: err})
 						return
 					}
 					receipts[committed] = receipt
-					allLogs = append(allLogs, logs...)
 				} else {
 					if err := d.Execute(workerCtx, committed); err != nil {
-						validationMu.Unlock()
-						storeErr(fmt.Errorf("tx %d re-execute failed: %w", committed, err))
+						storeErr(&TxIndexedError{Index: committed, Err: err})
 						return
 					}
-					receipt, logs, err := d.Commit(committed)
+					receipt, err := d.Commit(committed)
 					if err != nil {
-						validationMu.Unlock()
-						storeErr(fmt.Errorf("tx %d re-execute commit failed: %w", committed, err))
+						storeErr(&TxIndexedError{Index: committed, Err: err})
 						return
 					}
 					receipts[committed] = receipt
-					allLogs = append(allLogs, logs...)
 				}
 				nextValidateToCommit.Add(1)
-				validationMu.Unlock()
 				continue
 			}
 
+			// No validation task available - try to claim an execution task.
+			if nextExecToIssue.Load() >= uint64(txCount) {
+				runtime.Gosched()
+				continue
+			}
 			i := int(nextExecToIssue.Add(1) - 1)
 			if i >= txCount {
 				runtime.Gosched()
 				continue
 			}
 			err := d.Execute(workerCtx, i)
-			slots[i].publish(err)
+			if err != nil {
+				storeErr(&TxIndexedError{Index: i, Err: err})
+				return
+			}
+			slots[i].Store(slotReady)
 		}
 	}
 
@@ -188,10 +133,12 @@ func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.R
 	wg.Wait()
 
 	if err := runErr.Load(); err != nil {
-		return nil, nil, *err
+		return nil, *err
 	}
 	if got := int(nextValidateToCommit.Load()); got != txCount {
-		return nil, nil, fmt.Errorf("executor ended before all txs committed: committed=%d total=%d", got, txCount)
+		return nil, fmt.Errorf("executor ended before all txs committed: committed=%d total=%d", got, txCount)
 	}
-	return receipts, allLogs, nil
+	return receipts, nil
 }
+
+var _ Executor = (*SequentialValidateExecutor)(nil)

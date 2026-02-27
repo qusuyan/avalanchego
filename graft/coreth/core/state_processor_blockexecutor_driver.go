@@ -20,7 +20,6 @@ import (
 type txExecutionResult struct {
 	txState *parallel.TxnState
 	receipt *types.Receipt
-	logs    []*types.Log
 	gasUsed uint64
 }
 
@@ -75,16 +74,16 @@ func newStateProcessorBlockExecutorDriver(
 	}
 
 	d := &stateProcessorBlockExecutorDriver{
-		config:      config,
-		vmCfg:       vmCfg,
-		txs:         txs,
-		messages:    messages,
-		blockNumber: new(big.Int).Set(header.Number),
-		blockHash:   block.Hash(),
-		blockCtx:    NewEVMBlockContext(header, chain, nil),
-		blockState:  blockState,
-		slots:       make([]txExecutionSlot, len(txs)),
-		evmByWorker: make([]*vm.EVM, normalizeWorkerCount(vmCfg.ParallelExecutionWorkers)),
+		config:          config,
+		vmCfg:           vmCfg,
+		txs:             txs,
+		messages:        messages,
+		blockNumber:     new(big.Int).Set(header.Number),
+		blockHash:       block.Hash(),
+		blockCtx:        NewEVMBlockContext(header, chain, nil),
+		blockState:      blockState,
+		slots:           make([]txExecutionSlot, len(txs)),
+		evmByWorker:     make([]*vm.EVM, normalizeWorkerCount(vmCfg.ParallelExecutionWorkers)),
 		initialGasLimit: header.GasLimit,
 	}
 	d.initWorkerEVMs()
@@ -156,14 +155,12 @@ func (d *stateProcessorBlockExecutorDriver) Execute(ctx context.Context, txIndex
 		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
 	}
 
-	logs := txState.GetLogs(tx.Hash(), d.blockNumber.Uint64(), d.blockHash)
-	receipt.Logs = logs
+	receipt.Logs = txState.GetLogs(tx.Hash(), d.blockNumber.Uint64(), d.blockHash)
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 
 	execResult := &txExecutionResult{
 		txState: txState,
 		receipt: receipt,
-		logs:    logs,
 		gasUsed: result.UsedGas,
 	}
 	slot.result.Store(execResult)
@@ -184,38 +181,42 @@ func (d *stateProcessorBlockExecutorDriver) Validate(txIndex int) (bool, error) 
 	if result == nil {
 		return false, fmt.Errorf("tx %d has no execution result to validate", txIndex)
 	}
+	// validate block has enough gas
+	if result.gasUsed > d.remainingGas.Load() {
+		return false, ErrGasLimitReached
+	}
 	return d.blockState.ValidateReadSet(result.txState.ReadSet()), nil
 }
 
-func (d *stateProcessorBlockExecutorDriver) Commit(txIndex int) (*types.Receipt, []*types.Log, error) {
+func (d *stateProcessorBlockExecutorDriver) Commit(txIndex int) (*types.Receipt, error) {
 	if txIndex < 0 || txIndex >= len(d.txs) {
-		return nil, nil, fmt.Errorf("tx index %d out of range", txIndex)
+		return nil, fmt.Errorf("tx index %d out of range", txIndex)
 	}
 	slot := &d.slots[txIndex]
 	if !slot.state.CompareAndSwap(txSlotReady, txSlotRunning) {
-		return nil, nil, fmt.Errorf("tx %d is not ready for commit", txIndex)
+		return nil, fmt.Errorf("tx %d is not ready for commit", txIndex)
 	}
 	result := slot.result.Load()
 	if result == nil {
 		slot.state.Store(txSlotReady)
-		return nil, nil, fmt.Errorf("tx %d has no execution result to commit", txIndex)
+		return nil, fmt.Errorf("tx %d has no execution result to commit", txIndex)
 	}
 
 	remainingAfter, err := d.consumeGas(result.gasUsed)
 	if err != nil {
 		slot.state.Store(txSlotReady)
-		return nil, nil, err
+		return nil, err
 	}
 	if err := result.txState.CommitTxn(); err != nil {
 		slot.state.Store(txSlotReady)
-		return nil, nil, err
+		return nil, err
 	}
 
 	result.receipt.CumulativeGasUsed = d.initialGasLimit - remainingAfter
 	slot.result.Store(nil)
 	slot.state.Store(txSlotIdle)
 
-	return result.receipt, result.logs, nil
+	return result.receipt, nil
 }
 
 func (d *stateProcessorBlockExecutorDriver) consumeGas(gasUsed uint64) (uint64, error) {

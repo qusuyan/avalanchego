@@ -28,11 +28,14 @@
 package core
 
 import (
+	stdctx "context"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ava-labs/avalanchego/graft/coreth/consensus"
 	"github.com/ava-labs/avalanchego/graft/coreth/core/parallel"
+	"github.com/ava-labs/avalanchego/graft/coreth/core/parallel/blockexecutor"
 	"github.com/ava-labs/avalanchego/graft/coreth/params"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/state"
@@ -71,13 +74,9 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // transactions failed to execute due to insufficient gas it will return an error.
 func (p *StateProcessor) Process(block *types.Block, parent *types.Header, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error) {
 	var (
-		receipts    types.Receipts
-		usedGas     = new(uint64)
-		header      = block.Header()
-		blockHash   = block.Hash()
-		blockNumber = block.Number()
-		allLogs     []*types.Log
-		gp          = new(GasPool).AddGas(block.GasLimit())
+		receipts types.Receipts
+		header   = block.Header()
+		allLogs  []*types.Log
 	)
 
 	// Configure any upgrades that should go into effect during this block.
@@ -91,59 +90,39 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	var (
 		context = NewEVMBlockContext(header, p.bc, nil)
 		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
-		signer  = types.MakeSigner(p.config, header.Number, header.Time)
 	)
 
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
 	}
-	parallelEnabled := cfg.ParallelExecutionEnabled
-	// Iterate over and process the individual transactions
-	if parallelEnabled {
-		txHashes := make([]common.Hash, len(block.Transactions()))
-		for i, tx := range block.Transactions() {
-			txHashes[i] = tx.Hash()
+	txHashes := make([]common.Hash, len(block.Transactions()))
+	for i, tx := range block.Transactions() {
+		txHashes[i] = tx.Hash()
+	}
+	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
+	driver, err := newStateProcessorBlockExecutorDriver(p.config, p.bc, block, blockState, cfg)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	executor := chooseBlockExecutor(cfg)
+	receipts, err = executor.Run(stdctx.Background(), driver)
+	if err != nil {
+		if txErr, ok := err.(*blockexecutor.TxIndexedError); ok &&
+			txErr.Index >= 0 && txErr.Index < len(block.Transactions()) {
+			txHash := block.Transactions()[txErr.Index].Hash().Hex()
+			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", txErr.Index, txHash, txErr.Err)
 		}
-		blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
-		for i, tx := range block.Transactions() {
-			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-			}
-
-			var receipt *types.Receipt
-			txState := parallel.NewTxnState(blockState, tx.Hash(), i, 1) // use nonce 1 to avoid version = 0 => reserved for committed state version
-			receipt, err = applyTransactionSpeculative(msg, gp, txState, blockNumber, blockHash, tx, usedGas, vmenv)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-			}
-			if err := txState.CommitTxn(); err != nil {
-				return nil, nil, 0, fmt.Errorf("could not finalise tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-			}
-
-			receipts = append(receipts, receipt)
-			allLogs = append(allLogs, receipt.Logs...)
-		}
-		if err := blockState.WriteBack(); err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
-		}
-	} else {
-		for i, tx := range block.Transactions() {
-			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-			}
-
-			var receipt *types.Receipt
-			statedb.SetTxContext(tx.Hash(), i)
-			receipt, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-			}
-
-			receipts = append(receipts, receipt)
-			allLogs = append(allLogs, receipt.Logs...)
-		}
+		return nil, nil, 0, err
+	}
+	for _, receipt := range receipts {
+		allLogs = append(allLogs, receipt.Logs...)
+	}
+	var usedGas uint64
+	if len(receipts) > 0 {
+		usedGas = receipts[len(receipts)-1].CumulativeGasUsed
+	}
+	if err := blockState.WriteBack(); err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
 	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
@@ -151,7 +130,22 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 		return nil, nil, 0, fmt.Errorf("engine finalization check failed: %w", err)
 	}
 
-	return receipts, allLogs, *usedGas, nil
+	return receipts, allLogs, usedGas, nil
+}
+
+func chooseBlockExecutor(cfg vm.Config) blockexecutor.Executor {
+	execType := strings.ToLower(strings.TrimSpace(cfg.ParallelExecutionExecutor))
+	switch execType {
+	case "", blockexecutor.ExecutorTypeSequential:
+		return blockexecutor.NewSequentialExecutor()
+	case blockexecutor.ExecutorTypeSequentialValidate:
+		return blockexecutor.NewSequentialValidateExecutor(blockexecutor.Config{
+			Workers: cfg.ParallelExecutionWorkers,
+		})
+	default:
+		// Keep behavior predictable on invalid config: fallback to sequential.
+		return blockexecutor.NewSequentialExecutor()
+	}
 }
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {

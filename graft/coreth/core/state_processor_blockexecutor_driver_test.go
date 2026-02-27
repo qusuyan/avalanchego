@@ -108,7 +108,7 @@ func TestStateProcessorBlockExecutorDriverExecuteCommitWriteBack(t *testing.T) {
 	if err := driver.Execute(context.Background(), 0); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
-	receipt, logs, err := driver.Commit(0)
+	receipt, err := driver.Commit(0)
 	if err != nil {
 		t.Fatalf("commit failed: %v", err)
 	}
@@ -118,8 +118,8 @@ func TestStateProcessorBlockExecutorDriverExecuteCommitWriteBack(t *testing.T) {
 	if receipt.CumulativeGasUsed != receipt.GasUsed {
 		t.Fatalf("unexpected cumulative gas: got %d want %d", receipt.CumulativeGasUsed, receipt.GasUsed)
 	}
-	if len(logs) != 0 {
-		t.Fatalf("unexpected logs: %d", len(logs))
+	if len(receipt.Logs) != 0 {
+		t.Fatalf("unexpected logs: %d", len(receipt.Logs))
 	}
 	if !statedb.GetBalance(receiver).IsZero() {
 		t.Fatalf("state should not be materialized before WriteBack")
@@ -160,10 +160,10 @@ func TestStateProcessorBlockExecutorDriverAtomicGasLimitOnCommit(t *testing.T) {
 		t.Fatalf("execute tx1 failed: %v", err)
 	}
 
-	if _, _, err := driver.Commit(0); err != nil {
+	if _, err := driver.Commit(0); err != nil {
 		t.Fatalf("commit tx0 failed: %v", err)
 	}
-	if _, _, err := driver.Commit(1); err != ErrGasLimitReached {
+	if _, err := driver.Commit(1); err != ErrGasLimitReached {
 		t.Fatalf("expected ErrGasLimitReached on tx1 commit, got %v", err)
 	}
 }
@@ -208,10 +208,10 @@ func TestStateProcessorBlockExecutorDriverConcurrentExecute(t *testing.T) {
 	if errs[0] != nil || errs[1] != nil {
 		t.Fatalf("concurrent execute failed: err0=%v err1=%v", errs[0], errs[1])
 	}
-	if _, _, err := driver.Commit(0); err != nil {
+	if _, err := driver.Commit(0); err != nil {
 		t.Fatalf("commit tx0 failed: %v", err)
 	}
-	if _, _, err := driver.Commit(1); err != nil {
+	if _, err := driver.Commit(1); err != nil {
 		t.Fatalf("commit tx1 failed: %v", err)
 	}
 }

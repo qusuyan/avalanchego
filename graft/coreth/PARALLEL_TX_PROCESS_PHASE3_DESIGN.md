@@ -8,7 +8,7 @@ Implement true parallel transaction execution in `state_processor` while preserv
 
 ## Current Baseline
 
-1. `StateDBLastWriterBlockState` exists and is wired into the `cfg.ParallelExecutionEnabled` path.
+1. `StateDBLastWriterBlockState` exists and is wired into `state_processor.Process(...)`.
 2. `ValidateReadSet(...)` is implemented (existence + object version checks).
 3. Tx processing in `state_processor.Process(...)` is still serial even in parallel mode.
 4. Scheduler and true parallel execution path are not implemented yet.
@@ -108,6 +108,9 @@ Current `Process(...)` parallel branch executes and commits txs in a single loop
 3. Remove shared mutable state from speculative execution path (`GasPool`, `vm.EVM`).
 4. Ensure receipt fields requiring canonical order are assigned at commit.
 5. Add deterministic concurrency tests for conflict-free and conflict-heavy blocks.
+6. Make baseline `StateDB` reads thread-safe without coarse lock contention:
+   - current code uses `stateMu` around `StateDB` fallback reads/writes in `StateDBLastWriterBlockState`
+   - replace with a thread-safe baseline read strategy (snapshot or equivalent) so parallel reads do not race.
 
 ## Test Plan
 

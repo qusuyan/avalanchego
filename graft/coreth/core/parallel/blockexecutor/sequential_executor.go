@@ -2,7 +2,6 @@ package blockexecutor
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/ava-labs/libevm/core/types"
 )
@@ -16,10 +15,10 @@ func NewSequentialExecutor() *SequentialExecutor {
 	return &SequentialExecutor{}
 }
 
-func (e *SequentialExecutor) Run(ctx context.Context, d Driver) (types.Receipts, []*types.Log, error) {
+func (e *SequentialExecutor) Run(ctx context.Context, d Driver) (types.Receipts, error) {
 	txCount := d.TxCount()
 	if txCount == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	receipts := make(types.Receipts, txCount)
@@ -28,21 +27,21 @@ func (e *SequentialExecutor) Run(ctx context.Context, d Driver) (types.Receipts,
 
 	for i := 0; i < txCount; i++ {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if err := d.Execute(workerCtx, i); err != nil {
-			return nil, nil, fmt.Errorf("tx %d speculative execution failed: %w", i, err)
+			return nil, &TxIndexedError{Index: i, Err: err}
 		}
-		receipt, logs, err := d.Commit(i)
+		receipt, err := d.Commit(i)
 		if err != nil {
-			return nil, nil, fmt.Errorf("tx %d commit failed: %w", i, err)
+			return nil, &TxIndexedError{Index: i, Err: err}
 		}
 		receipts[i] = receipt
-		allLogs = append(allLogs, logs...)
+		allLogs = append(allLogs, receipt.Logs...)
 	}
 
-	return receipts, allLogs, nil
+	return receipts, nil
 }
 
 var _ Executor = (*SequentialExecutor)(nil)

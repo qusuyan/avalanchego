@@ -351,15 +351,15 @@ When `BlockState` is introduced, track versions at fine granularity.
 
 Goal: add rollout controls before behavior changes.
 
-1. Add feature flags:
-- `ParallelExecutionEnabled`
+1. Add executor configuration:
+- `ParallelExecutionExecutor`
 - `ParallelExecutionWorkers`
 
 2. Keep existing serial path unchanged and default.
 
 Acceptance criteria:
-- Build compiles with new flags.
-- No runtime behavior change when flag is disabled.
+- Build compiles with new config knobs.
+- Runtime behavior is selected by executor type (default `sequential`).
 
 ### Phase 1: TxnState Overlay on Existing StateDB
 
@@ -714,8 +714,8 @@ Validation status (targeted):
 
 Implemented:
 
-1. Added feature flags in `graft/coreth/eth/ethconfig/config.go`:
-- `ParallelExecutionEnabled`
+1. Added parallel execution config in `graft/coreth/eth/ethconfig/config.go`:
+- `ParallelExecutionExecutor`
 - `ParallelExecutionWorkers`
 
 2. Regenerated `graft/coreth/eth/ethconfig/gen_config.go` so the new fields are

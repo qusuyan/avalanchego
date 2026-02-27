@@ -214,9 +214,9 @@ func New(
 
 	var (
 		vmConfig = vm.Config{
-			EnablePreimageRecording: config.EnablePreimageRecording,
-			ParallelExecutionEnabled: config.ParallelExecutionEnabled,
-			ParallelExecutionWorkers: config.ParallelExecutionWorkers,
+			EnablePreimageRecording:   config.EnablePreimageRecording,
+			ParallelExecutionWorkers:  config.ParallelExecutionWorkers,
+			ParallelExecutionExecutor: config.ParallelExecutionExecutor,
 		}
 		cacheConfig = &core.CacheConfig{
 			TrieCleanLimit:                  config.TrieCleanCache,
