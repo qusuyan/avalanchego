@@ -22,7 +22,6 @@ func (e *SequentialExecutor) Run(ctx context.Context, d Driver) (types.Receipts,
 	}
 
 	receipts := make(types.Receipts, txCount)
-	allLogs := make([]*types.Log, 0)
 	workerCtx := WithWorkerID(ctx, 0)
 
 	for i := 0; i < txCount; i++ {
@@ -38,7 +37,6 @@ func (e *SequentialExecutor) Run(ctx context.Context, d Driver) (types.Receipts,
 			return nil, &TxIndexedError{Index: i, Err: err}
 		}
 		receipts[i] = receipt
-		allLogs = append(allLogs, receipt.Logs...)
 	}
 
 	return receipts, nil

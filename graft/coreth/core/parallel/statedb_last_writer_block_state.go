@@ -252,7 +252,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 			// Creation starts a fresh object epoch for the account.
 			// Keep balance to match TxWriteSet.CreateAccount semantics.
 			b.clearAddressObjectsUpToVersion(addr, version, true)
-		case lifecycleDestructed | lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exists.
+		case lifecycleDestructed, lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exist.
 			if !b.storeExistsLWW(addr, ExistsState{Exists: false, Version: version}) {
 				// A newer version already exists; skip stale lifecycle.
 				continue
