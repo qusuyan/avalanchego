@@ -75,6 +75,14 @@ func (t *TxnState) TxIndex() int {
 	return t.txIndex
 }
 
+func (t *TxnState) ReadSet() *TxReadSet {
+	return t.readSet
+}
+
+func (t *TxnState) WriteSet() *TxWriteSet {
+	return t.writeSet
+}
+
 // Validate is a placeholder for phase-1 direct StateDB wrapping.
 func (t *TxnState) Validate() bool {
 	return true
@@ -293,8 +301,8 @@ func (t *TxnState) Empty(addr common.Address) bool {
 	if t.GetNonce(addr) != 0 {
 		return false
 	}
-	// 3. check if the code hash is empty
-	if bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
+	// 3. check if the code is non-empty (non-empty code makes account non-empty)
+	if !bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
 		return false
 	}
 	// 4. check if extra is empty

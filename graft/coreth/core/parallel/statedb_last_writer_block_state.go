@@ -35,6 +35,9 @@ type StateDBLastWriterBlockState struct {
 	txHashs []common.Hash
 
 	mu sync.RWMutex
+	// stateMu serializes access to underlying StateDB, which is not thread-safe
+	// even for logical reads due to internal cache/map mutation.
+	stateMu sync.Mutex
 
 	// Sticky shared error: first DB/state failure wins.
 	dbErr error
@@ -167,6 +170,8 @@ func (b *StateDBLastWriterBlockState) Exists(addr common.Address) (bool, ObjectV
 	if b.statedb == nil {
 		return false, ERROR_VERSION, fmt.Errorf("nil base state")
 	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
 	return b.statedb.Exist(addr), COMMITTED_VERSION, nil
 }
 
@@ -186,6 +191,8 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*Versi
 	if b.statedb == nil {
 		return nil, fmt.Errorf("nil base state")
 	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
 
 	switch key.Kind {
 	case StateObjectBalance:
@@ -245,7 +252,7 @@ func (b *StateDBLastWriterBlockState) ApplyWriteSet(_ int, version ObjectVersion
 			// Creation starts a fresh object epoch for the account.
 			// Keep balance to match TxWriteSet.CreateAccount semantics.
 			b.clearAddressObjectsUpToVersion(addr, version, true)
-		case lifecycleDestructed | lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exists.
+		case lifecycleDestructed, lifecycleCreatedAndDestructed: // when a txn completes, destructed accounts no longer exist.
 			if !b.storeExistsLWW(addr, ExistsState{Exists: false, Version: version}) {
 				// A newer version already exists; skip stale lifecycle.
 				continue
@@ -325,6 +332,8 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 	if err := b.Error(); err != nil {
 		return fmt.Errorf("commit aborted due to earlier error: %w", err)
 	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
 
 	// Apply existence lifecycle state first.
 	b.existsStates.Range(func(k, v any) bool {

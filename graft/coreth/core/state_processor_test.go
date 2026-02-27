@@ -59,18 +59,18 @@ import (
 func u64(val uint64) *uint64 { return &val }
 
 func TestStateProcessorErrors(t *testing.T) {
-	testStateProcessorErrors(t, false)
+	testStateProcessorErrors(t, "sequential")
 }
 
 func TestStateProcessorErrorsParallel(t *testing.T) {
-	testStateProcessorErrors(t, true)
+	testStateProcessorErrors(t, "sequential-validate")
 }
 
 // TestStateProcessorErrors tests the output from the 'core' errors
 // as defined in core/error.go. These errors are generated when the
 // blockchain imports bad blocks, meaning blocks which have valid headers but
 // contain invalid transactions
-func testStateProcessorErrors(t *testing.T, parallelExecEnabled bool) {
+func testStateProcessorErrors(t *testing.T, executorType string) {
 	cpcfg := *params.TestChainConfig
 	config := &cpcfg
 	config.ShanghaiTime = u64(0)
@@ -138,7 +138,7 @@ func testStateProcessorErrors(t *testing.T, parallelExecEnabled bool) {
 				GasLimit: cortina.GasLimit,
 			}
 			// FullFaker used to skip header verification that enforces no blobs.
-			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
+			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
 			tooBigInitCode = [ethparams.MaxInitCodeSize + 1]byte{}
 		)
 
@@ -304,7 +304,7 @@ func testStateProcessorErrors(t *testing.T, parallelExecEnabled bool) {
 				},
 				GasLimit: ap1.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {
@@ -344,7 +344,7 @@ func testStateProcessorErrors(t *testing.T, parallelExecEnabled bool) {
 				},
 				GasLimit: cortina.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionEnabled: parallelExecEnabled}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {

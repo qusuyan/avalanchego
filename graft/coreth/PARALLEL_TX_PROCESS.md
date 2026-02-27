@@ -1,6 +1,6 @@
 # Parallel Transaction Execution Notes
 
-Last updated: 2026-02-23
+Last updated: 2026-02-24
 
 ## Scope
 
@@ -9,6 +9,29 @@ This document summarizes:
 1. The current serial execution path in this workspace.
 2. The agreed target direction for parallel transaction execution.
 3. Key constraints and open decisions to pick up later.
+
+## Progress Update (2026-02-24)
+
+### Completed Since Last Update
+
+1. Reviewed and consolidated latest lifecycle/existence bugfix direction across recent commits:
+- `598ac0db4`: introduced `lifecycleCreatedAndDestructed`, aligned `Exist`/`HasSelfDestructed` semantics, and switched canonical existence tracking to explicit boolean state in block overlay.
+- `c1955a6bc`: removed premature `Exist(...)` early-false behavior on read-set duplicate version mismatch (keeps observed existence result; leaves early-terminate as TODO).
+
+2. Applied follow-up fixes in current staged changes to preserve lifecycle correctness in tx-local reads and block writeback:
+- added `TxWriteSet.IsCreated(...)` helper and used it in `TxnState.read(...)` so newly created accounts return empty non-balance object values without leaking old committed object state.
+- guarded `StateDBLastWriterBlockState.WriteBack()` balance writes so destructed accounts are not recreated via late balance materialization.
+
+3. Added targeted regression coverage:
+- new `parallel_state_test.go` cases covering:
+  - create/destruct/recreate sequencing (recreate inherits balance but not stale storage)
+  - write-after-destruct behavior (writes do not resurrect destructed accounts)
+- updated `txn_state_test` test harness semantics to match existence expectations used by the new lifecycle behavior.
+
+### Current Status
+
+1. Account lifecycle handling is now more consistent across tx-local execution (`TxnState`) and block-level materialization (`StateDBLastWriterBlockState`), especially for create+destruct and recreate paths.
+2. Regression coverage now includes explicit tests for stale object leakage and unintended account resurrection via writeback.
 
 ## Progress Update (2026-02-23)
 
@@ -328,15 +351,15 @@ When `BlockState` is introduced, track versions at fine granularity.
 
 Goal: add rollout controls before behavior changes.
 
-1. Add feature flags:
-- `ParallelExecutionEnabled`
+1. Add executor configuration:
+- `ParallelExecutionExecutor`
 - `ParallelExecutionWorkers`
 
 2. Keep existing serial path unchanged and default.
 
 Acceptance criteria:
-- Build compiles with new flags.
-- No runtime behavior change when flag is disabled.
+- Build compiles with new config knobs.
+- Runtime behavior is selected by executor type (default `sequential`).
 
 ### Phase 1: TxnState Overlay on Existing StateDB
 
@@ -503,6 +526,73 @@ Notes:
 
 ## Progress Log
 
+### 2026-02-26
+
+Implemented:
+
+1. `StateDBLastWriterBlockState.ValidateReadSet(...)` now performs real version checks:
+- validates account existence versions
+- validates object read versions
+- returns conflict (`false`) on any mismatch/error
+
+2. Added focused validation coverage in `graft/coreth/core/parallel/parallel_state_test.go`:
+- unchanged-version pass case
+- changed-version fail case
+
+3. Introduced block-executor module under `graft/coreth/core/parallel/blockexecutor`:
+- shared `Executor` / `Driver` interfaces
+- `SequentialExecutor` (baseline `Execute -> Commit`)
+- `SequentialValidateExecutor` (mixed workers, validation-priority scheduling, sequential commit)
+- worker-context plumbing (`WithWorkerID`, `WorkerIDFromContext`)
+
+4. Refined block-executor responsibilities:
+- executors now coordinate by tx index only
+- driver owns tx-local artifacts (`TxnState`) and exposes `Execute/Validate/Commit(txIndex)`
+- removed read-set/write-set payload passing across executor boundary
+
+5. Added concrete `stateProcessor` driver in `graft/coreth/core/state_processor_blockexecutor_driver.go`:
+- precomputes tx messages and block context
+- executes tx with tx-local `TxnState`
+- stores per-tx execution results in driver-owned slots
+- validates via `blockState.ValidateReadSet(txState.ReadSet())`
+- commits via `txState.CommitTxn()`
+
+6. EVM concurrency/lifecycle updates in driver:
+- worker-pinned EVM instances
+- one EVM preinitialized per configured worker slot
+- worker selection via context worker ID
+
+7. Slot and commit-path concurrency hardening:
+- replaced per-slot mutex with atomic slot state machine (`idle/running/ready`)
+- fail-fast when same-tx task is already running or not in expected state
+- commit claim via CAS (`ready -> running`)
+
+8. Gas accounting simplification:
+- keep `remainingGas` as canonical atomic state
+- derive receipt cumulative gas as `initialGasLimit - remainingGasAfterCommit`
+- removed separate cumulative-gas accumulator
+
+9. Added/updated targeted tests:
+- `graft/coreth/core/state_processor_blockexecutor_driver_test.go`
+  - execute/commit/writeback correctness
+  - atomic gas-limit enforcement at commit
+  - concurrent execute path
+  - same-worker EVM reuse
+  - one-EVM-per-worker-slot behavior
+- `graft/coreth/core/parallel/blockexecutor/executor_test.go`
+  - updated for tx-index-only driver API
+
+Validation status (targeted):
+
+1. `go test ./graft/coreth/core/parallel/blockexecutor -count=1` (pass)
+2. `go test ./graft/coreth/core -run TestStateProcessorBlockExecutorDriver -count=1` (pass)
+
+Notes:
+
+1. `state_processor.Process(...)` has not yet been switched to call `blockexecutor.Run(...)`.
+2. Design caveat recorded: if `CumulativeGasUsed` is derived from `blockGasLimit - remainingGas`,
+   commit order must remain deterministic by tx index.
+
 ### 2026-02-18
 
 Implemented:
@@ -624,8 +714,8 @@ Validation status (targeted):
 
 Implemented:
 
-1. Added feature flags in `graft/coreth/eth/ethconfig/config.go`:
-- `ParallelExecutionEnabled`
+1. Added parallel execution config in `graft/coreth/eth/ethconfig/config.go`:
+- `ParallelExecutionExecutor`
 - `ParallelExecutionWorkers`
 
 2. Regenerated `graft/coreth/eth/ethconfig/gen_config.go` so the new fields are
