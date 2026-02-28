@@ -24,6 +24,11 @@ type txPreimages struct {
 	entries map[common.Hash][]byte
 }
 
+type storageCacheKey struct {
+	address common.Address
+	slot    common.Hash
+}
+
 // StateDBLastWriterBlockState keeps canonical in-block changes in a
 // last-writer-wins map and uses StateDB as baseline + final sink.
 //
@@ -42,18 +47,32 @@ type StateDBLastWriterBlockState struct {
 	// Canonical last-writer-wins entries carry both value and version together.
 	objectStates sync.Map // map[StateObjectKey]*atomic.Pointer[VersionedValue]
 	existsStates sync.Map // map[common.Address]*atomic.Pointer[ExistsState]
+	// Account and storage caches are used to avoid redundant loads from StateDB for commonly accessed accounts
+	accountCache sync.Map // map[common.Address]*atomic.Pointer[state.ParallelAccountCache]
+	storageCache sync.Map // map[storageCacheKey]*atomic.Pointer[common.Hash]
+
+	readers []*state.ParallelReader
 
 	// Side-effect tracking by tx index.
 	logsByTx      []atomic.Pointer[txLogs]
 	preimagesByTx []atomic.Pointer[txPreimages]
 }
 
-func NewStateDBLastWriterBlockState(statedb *state.StateDB, txHashs []common.Hash) *StateDBLastWriterBlockState {
+func NewStateDBLastWriterBlockState(statedb *state.StateDB, txHashs []common.Hash, workerCount int) *StateDBLastWriterBlockState {
 	numTx := len(txHashs)
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	readers := make([]*state.ParallelReader, workerCount)
+	readers[0] = state.NewParallelReader(statedb)
+	for i := 1; i < len(readers); i++ {
+		readers[i] = readers[0].Copy()
+	}
 
 	return &StateDBLastWriterBlockState{
 		statedb:       statedb,
 		txHashs:       txHashs,
+		readers:       readers,
 		logsByTx:      make([]atomic.Pointer[txLogs], numTx),
 		preimagesByTx: make([]atomic.Pointer[txPreimages], numTx),
 	}
@@ -85,14 +104,46 @@ func (b *StateDBLastWriterBlockState) loadObjectState(key StateObjectKey) *Versi
 	return object
 }
 
+func (b *StateDBLastWriterBlockState) loadAccountCache(addr common.Address) (*state.ParallelAccountCache, bool) {
+	value, ok := b.accountCache.Load(addr)
+	if !ok {
+		return nil, false
+	}
+	ptr := value.(*atomic.Pointer[state.ParallelAccountCache])
+	cache := ptr.Load()
+	if cache == nil {
+		return nil, false
+	}
+	return cache, true
+}
+
+func (b *StateDBLastWriterBlockState) loadStorageCache(addr common.Address, slot common.Hash) *common.Hash {
+	value, ok := b.storageCache.Load(storageCacheKey{address: addr, slot: slot})
+	if !ok {
+		return nil
+	}
+	ptr := value.(*atomic.Pointer[common.Hash])
+	return ptr.Load()
+}
+
 func (b *StateDBLastWriterBlockState) getOrCreateExistsPtr(addr common.Address) *atomic.Pointer[ExistsState] {
 	ptr, _ := b.existsStates.LoadOrStore(addr, &atomic.Pointer[ExistsState]{})
 	return ptr.(*atomic.Pointer[ExistsState])
 }
 
+func (b *StateDBLastWriterBlockState) getOrCreateAccountPtr(addr common.Address) *atomic.Pointer[state.ParallelAccountCache] {
+	ptr, _ := b.accountCache.LoadOrStore(addr, &atomic.Pointer[state.ParallelAccountCache]{})
+	return ptr.(*atomic.Pointer[state.ParallelAccountCache])
+}
+
 func (b *StateDBLastWriterBlockState) getOrCreateObjectPtr(key StateObjectKey) *atomic.Pointer[VersionedValue] {
 	ptr, _ := b.objectStates.LoadOrStore(key, &atomic.Pointer[VersionedValue]{})
 	return ptr.(*atomic.Pointer[VersionedValue])
+}
+
+func (b *StateDBLastWriterBlockState) getOrCreateStoragePtr(addr common.Address, slot common.Hash) *atomic.Pointer[common.Hash] {
+	ptr, _ := b.storageCache.LoadOrStore(storageCacheKey{address: addr, slot: slot}, &atomic.Pointer[common.Hash]{})
+	return ptr.(*atomic.Pointer[common.Hash])
 }
 
 func (b *StateDBLastWriterBlockState) storeExistsLWW(addr common.Address, next ExistsState) bool {
@@ -160,18 +211,68 @@ func (b *StateDBLastWriterBlockState) Error() error {
 	return b.dbErr
 }
 
-func (b *StateDBLastWriterBlockState) Exists(addr common.Address) (bool, ObjectVersion, error) {
+func (b *StateDBLastWriterBlockState) readerIndexForWorker(workerID int) int {
+	if len(b.readers) == 0 {
+		return 0
+	}
+	if workerID < 0 {
+		workerID = -workerID
+	}
+	return workerID % len(b.readers)
+}
+
+func (b *StateDBLastWriterBlockState) getOrLoadAccountCache(addr common.Address, workerID int) (*state.ParallelAccountCache, error) {
+	if cache, ok := b.loadAccountCache(addr); ok {
+		return cache, nil
+	}
+	if len(b.readers) == 0 {
+		return nil, fmt.Errorf("nil baseline reader")
+	}
+	readerIndex := b.readerIndexForWorker(workerID)
+	if cache, ok := b.loadAccountCache(addr); ok {
+		return cache, nil
+	}
+	cache, err := b.readers[readerIndex].GetAccount(addr)
+	if err != nil {
+		return nil, err
+	}
+	b.getOrCreateAccountPtr(addr).Store(cache)
+	return cache, nil
+}
+
+func (b *StateDBLastWriterBlockState) getOrLoadStorage(addr common.Address, slot common.Hash, workerID int) (common.Hash, error) {
+	if cache := b.loadStorageCache(addr, slot); cache != nil {
+		return *cache, nil
+	}
+	if len(b.readers) == 0 {
+		return common.Hash{}, fmt.Errorf("nil baseline reader")
+	}
+	readerIndex := b.readerIndexForWorker(workerID)
+	if cache := b.loadStorageCache(addr, slot); cache != nil {
+		return *cache, nil
+	}
+	value, err := b.readers[readerIndex].GetState(addr, slot, stateconf.SkipStateKeyTransformation())
+	if err != nil {
+		return common.Hash{}, err
+	}
+	valueCopy := value
+	b.getOrCreateStoragePtr(addr, slot).Store(&valueCopy)
+	return value, nil
+}
+
+func (b *StateDBLastWriterBlockState) Exists(addr common.Address, workerID int) (bool, ObjectVersion, error) {
 	if entry := b.loadExistsState(addr); entry != nil {
 		return entry.Exists, entry.Version, nil
 	}
-	if b.statedb == nil {
-		return false, ERROR_VERSION, fmt.Errorf("nil base state")
+	cache, err := b.getOrLoadAccountCache(addr, workerID)
+	if err != nil {
+		return false, ERROR_VERSION, err
 	}
-	return b.statedb.Exist(addr), COMMITTED_VERSION, nil
+	return cache.Exists, COMMITTED_VERSION, nil
 }
 
-func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
-	exists, version, err := b.Exists(key.Address)
+func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, workerID int) (*VersionedValue, error) {
+	exists, version, err := b.Exists(key.Address, workerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existence for address %s: %w", key.Address.Hex(), err)
 	}
@@ -183,23 +284,28 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, _ uint64) (*Versi
 		return entry, nil
 	}
 
-	if b.statedb == nil {
-		return nil, fmt.Errorf("nil base state")
+	cache, err := b.getOrLoadAccountCache(key.Address, workerID)
+	if err != nil {
+		return nil, err
 	}
 
 	switch key.Kind {
 	case StateObjectBalance:
-		return &VersionedValue{Value: NewBalanceValue(b.statedb.GetBalance(key.Address)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewBalanceValue(cache.Data.Balance), Version: COMMITTED_VERSION}, nil
 	case StateObjectNonce:
-		return &VersionedValue{Value: NewNonceValue(b.statedb.GetNonce(key.Address)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewNonceValue(cache.Data.Nonce), Version: COMMITTED_VERSION}, nil
 	case StateObjectCodeHash:
-		return &VersionedValue{Value: NewCodeHashValue(b.statedb.GetCodeHash(key.Address)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewCodeHashValue(common.BytesToHash(cache.Data.CodeHash)), Version: COMMITTED_VERSION}, nil
 	case StateObjectCode:
-		return &VersionedValue{Value: NewCodeValue(b.statedb.GetCode(key.Address)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewCodeValue(cache.Code), Version: COMMITTED_VERSION}, nil
 	case StateObjectStorage:
-		return &VersionedValue{Value: NewStorageValue(b.statedb.GetState(key.Address, key.Slot, stateconf.SkipStateKeyTransformation())), Version: COMMITTED_VERSION}, nil
+		value, err := b.getOrLoadStorage(key.Address, key.Slot, workerID)
+		if err != nil {
+			return nil, err
+		}
+		return &VersionedValue{Value: NewStorageValue(value), Version: COMMITTED_VERSION}, nil
 	case StateObjectExtra:
-		return &VersionedValue{Value: NewExtraValue(b.statedb.GetExtra(key.Address)), Version: COMMITTED_VERSION}, nil
+		return &VersionedValue{Value: NewExtraValue(cache.Data.Extra), Version: COMMITTED_VERSION}, nil
 	default:
 		return nil, fmt.Errorf("unknown state object kind: %d", key.Kind)
 	}
@@ -293,7 +399,7 @@ func (b *StateDBLastWriterBlockState) ValidateReadSet(rs *TxReadSet) bool {
 	}
 
 	for addr, observedVersion := range rs.accountExistsVersion {
-		_, currentVersion, err := b.Exists(addr)
+		_, currentVersion, err := b.Exists(addr, 0)
 		if err != nil {
 			b.setError(err)
 			return false
@@ -324,6 +430,9 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 	}
 	if err := b.Error(); err != nil {
 		return fmt.Errorf("commit aborted due to earlier error: %w", err)
+	}
+	if err := b.preloadCanonicalState(); err != nil {
+		return err
 	}
 
 	// Apply existence lifecycle state first.
@@ -404,6 +513,44 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 
 	b.statedb.SetError(b.dbErr)
 	b.statedb.Finalise(true)
+	return nil
+}
+
+func (b *StateDBLastWriterBlockState) preloadCanonicalState() error {
+	addresses := make(map[common.Address]struct{})
+	b.existsStates.Range(func(k, _ any) bool {
+		addresses[k.(common.Address)] = struct{}{}
+		return true
+	})
+	b.objectStates.Range(func(k, _ any) bool {
+		addresses[k.(StateObjectKey).Address] = struct{}{}
+		return true
+	})
+	for addr := range addresses {
+		cache, ok := b.loadAccountCache(addr)
+		if !ok || cache == nil || !cache.Exists {
+			continue
+		}
+		preload := cache.Clone()
+		b.storageCache.Range(func(k, v any) bool {
+			cacheKey := k.(storageCacheKey)
+			if cacheKey.address != addr {
+				return true
+			}
+			value := v.(*atomic.Pointer[common.Hash]).Load()
+			if value == nil {
+				return true
+			}
+			if preload.Storage == nil {
+				preload.Storage = make(map[common.Hash]common.Hash)
+			}
+			preload.Storage[cacheKey.slot] = *value
+			return true
+		})
+		if err := b.statedb.PreloadParallelAccount(preload); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

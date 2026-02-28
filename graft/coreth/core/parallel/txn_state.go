@@ -18,10 +18,11 @@ import (
 // Reads check local writes first, then fallback to wrapped canonical state.
 type TxnState struct {
 	// transaction identity
-	base    BlockState
-	txHash  common.Hash
-	txIndex int
-	nonce   uint32
+	base     BlockState
+	txHash   common.Hash
+	txIndex  int
+	workerID int
+	nonce    uint32
 
 	// read/write tracking for state objects
 	writeSet *TxWriteSet
@@ -53,11 +54,12 @@ type txnWriteSetSnapshot struct {
 
 var _ vm.StateDB = (*TxnState)(nil)
 
-func NewTxnState(base BlockState, txHash common.Hash, txIndex int, nonce uint32) *TxnState {
+func NewTxnState(base BlockState, txHash common.Hash, txIndex int, workerID int, nonce uint32) *TxnState {
 	return &TxnState{
 		base:       base,
 		txHash:     txHash,
 		txIndex:    txIndex,
+		workerID:   workerID,
 		nonce:      nonce,
 		writeSet:   NewTxWriteSet(),
 		readSet:    NewTxReadSet(),
@@ -270,7 +272,7 @@ func (t *TxnState) Exist(addr common.Address) bool {
 		}
 		// a self-destructed account is considered existing until the end of block execution - we should query BlockState if the account exists
 	}
-	exists, version, err := t.base.Exists(addr)
+	exists, version, err := t.base.Exists(addr, t.workerID)
 	if err != nil {
 		return false
 	}
@@ -462,7 +464,7 @@ func (t *TxnState) readFromBase(key StateObjectKey) (*VersionedValue, error) {
 	if t.base == nil {
 		return nil, fmt.Errorf("base is nil")
 	}
-	vv, err := t.base.Read(key, uint64(t.txIndex))
+	vv, err := t.base.Read(key, t.workerID)
 	if err != nil {
 		return nil, err
 	}

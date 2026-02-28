@@ -12,8 +12,8 @@ import (
 // BlockState is the canonical block-level state used by parallel execution.
 // It exposes versioned reads and deterministic write-set application.
 type BlockState interface {
-	Exists(addr common.Address) (bool, ObjectVersion, error)
-	Read(key StateObjectKey, txIndex uint64) (*VersionedValue, error)
+	Exists(addr common.Address, workerID int) (bool, ObjectVersion, error)
+	Read(key StateObjectKey, workerID int) (*VersionedValue, error)
 	Logs() []*types.Log
 	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
 	AddLogs(txIndex int, logs []*types.Log) error
@@ -34,7 +34,7 @@ func NewSequentialBlockState(base *state.StateDB) *SequentialBlockState {
 	return &SequentialBlockState{base: base}
 }
 
-func (b *SequentialBlockState) Exists(addr common.Address) (bool, ObjectVersion, error) {
+func (b *SequentialBlockState) Exists(addr common.Address, _ int) (bool, ObjectVersion, error) {
 	if b == nil || b.base == nil {
 		return false, ERROR_VERSION, nil
 	}
@@ -42,7 +42,7 @@ func (b *SequentialBlockState) Exists(addr common.Address) (bool, ObjectVersion,
 	return exists, COMMITTED_VERSION, nil
 }
 
-func (b *SequentialBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (b *SequentialBlockState) Read(key StateObjectKey, _ int) (*VersionedValue, error) {
 	if b == nil || b.base == nil {
 		return nil, fmt.Errorf("nil base state")
 	}
