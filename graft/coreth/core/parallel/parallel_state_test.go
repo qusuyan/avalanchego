@@ -123,7 +123,7 @@ func TestValidateReadSetMatchesCurrentVersions(t *testing.T) {
 		t.Fatalf("unexpected existing version when recording object")
 	}
 
-	if !blockState.ValidateReadSet(readSet) {
+	if !blockState.ValidateReadSet(readSet, 0) {
 		t.Fatalf("expected read-set validation to succeed for unchanged versions")
 	}
 }
@@ -164,7 +164,7 @@ func TestValidateReadSetDetectsVersionMismatches(t *testing.T) {
 		t.Fatalf("failed to apply write-set: %v", err)
 	}
 
-	if blockState.ValidateReadSet(readSet) {
+	if blockState.ValidateReadSet(readSet, 0) {
 		t.Fatalf("expected read-set validation to fail on version mismatch")
 	}
 }
@@ -318,7 +318,7 @@ func TestConcurrentBaselineReadsShareCacheAndValidate(t *testing.T) {
 			}
 			readSet.RecordObjectVersion(StorageKey(addr, slot), stateValue.Version)
 
-			if !blockState.ValidateReadSet(readSet) {
+			if !blockState.ValidateReadSet(readSet, workerID) {
 				errCh <- testingError("expected read-set validation to succeed")
 				return
 			}
@@ -331,7 +331,7 @@ func TestConcurrentBaselineReadsShareCacheAndValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cache, ok := blockState.loadAccountCache(addr); !ok || cache == nil || !cache.Exists {
+	if cache, ok := blockState.loadAccountCache(addr); !ok || cache == nil || cache.Data == nil {
 		t.Fatal("expected shared account cache entry to be populated")
 	}
 	if cache := blockState.loadStorageCache(addr, slot); cache == nil || *cache != common.HexToHash("0x44") {
@@ -396,5 +396,57 @@ func TestConcurrentReadThenWriteBack(t *testing.T) {
 	}
 	if got := statedb.GetState(addr, slot); got != common.HexToHash("0x66") {
 		t.Fatalf("unexpected storage after writeback: %x", got)
+	}
+}
+
+func TestStateDBLastWriterBlockStateRejectsInvalidWorkerID(t *testing.T) {
+	txnHash0 := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	db := rawdb.NewMemoryDatabase()
+	tdb := triedb.NewDatabase(db, nil)
+
+	seed, _ := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	addr := common.HexToAddress("0x5555555555555555555555555555555555555555")
+	seed.SetBalance(addr, uint256.NewInt(21))
+	root, err := seed.Commit(0, true)
+	if err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	if err := tdb.Commit(root, false); err != nil {
+		t.Fatalf("triedb commit failed: %v", err)
+	}
+
+	statedb, _ := state.New(root, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	blockState := NewStateDBLastWriterBlockState(statedb, []common.Hash{txnHash0}, 1)
+
+	if _, _, err := blockState.Exists(addr, -1); err == nil || err.Error() != "invalid worker ID -1" {
+		t.Fatalf("expected invalid worker ID error, got %v", err)
+	}
+	if _, _, err := blockState.Exists(addr, 1); err == nil || err.Error() != "worker ID 1 out of range [0,1)" {
+		t.Fatalf("expected out-of-range worker ID error, got %v", err)
+	}
+}
+
+func TestStateDBLastWriterBlockStateRejectsMissingWorkerReader(t *testing.T) {
+	txnHash0 := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	db := rawdb.NewMemoryDatabase()
+	tdb := triedb.NewDatabase(db, nil)
+
+	seed, _ := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	addr := common.HexToAddress("0x6666666666666666666666666666666666666666")
+	seed.SetBalance(addr, uint256.NewInt(21))
+	root, err := seed.Commit(0, true)
+	if err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	if err := tdb.Commit(root, false); err != nil {
+		t.Fatalf("triedb commit failed: %v", err)
+	}
+
+	statedb, _ := state.New(root, state.NewDatabaseWithNodeDB(db, tdb), nil)
+	blockState := NewStateDBLastWriterBlockState(statedb, []common.Hash{txnHash0}, 2)
+	blockState.readers[1] = nil
+
+	if _, err := blockState.Read(BalanceKey(addr), 1); err == nil || err.Error() != "failed to check existence for address 0x6666666666666666666666666666666666666666: baseline reader for worker ID 1 is not initialized" {
+		t.Fatalf("expected missing reader error, got %v", err)
 	}
 }
