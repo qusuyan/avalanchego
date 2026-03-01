@@ -76,7 +76,11 @@ func newDriverTestSetup(t *testing.T, gasLimit uint64, alloc types.GenesisAlloc,
 	for i, tx := range txs {
 		txHashes[i] = tx.Hash()
 	}
-	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
+	workerCount := vmCfg.ParallelExecutionWorkers
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, workerCount)
 	driver, err := newStateProcessorBlockExecutorDriver(config, blockchain, block, blockState, vmCfg)
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
@@ -105,7 +109,7 @@ func TestStateProcessorBlockExecutorDriverExecuteCommitWriteBack(t *testing.T) {
 		t.Fatalf("expected receiver to start with zero balance")
 	}
 
-	if err := driver.Execute(context.Background(), 0); err != nil {
+	if err := driver.Execute(blockexecutor.WithWorkerID(context.Background(), 0), 0); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	receipt, err := driver.Commit(0)
@@ -153,10 +157,10 @@ func TestStateProcessorBlockExecutorDriverAtomicGasLimitOnCommit(t *testing.T) {
 	blockchain, driver, _ := newDriverTestSetup(t, 21000, alloc, types.Transactions{tx0, tx1}, vm.Config{})
 	defer blockchain.Stop()
 
-	if err := driver.Execute(context.Background(), 0); err != nil {
+	if err := driver.Execute(blockexecutor.WithWorkerID(context.Background(), 0), 0); err != nil {
 		t.Fatalf("execute tx0 failed: %v", err)
 	}
-	if err := driver.Execute(context.Background(), 1); err != nil {
+	if err := driver.Execute(blockexecutor.WithWorkerID(context.Background(), 0), 1); err != nil {
 		t.Fatalf("execute tx1 failed: %v", err)
 	}
 
@@ -165,6 +169,50 @@ func TestStateProcessorBlockExecutorDriverAtomicGasLimitOnCommit(t *testing.T) {
 	}
 	if _, err := driver.Commit(1); err != ErrGasLimitReached {
 		t.Fatalf("expected ErrGasLimitReached on tx1 commit, got %v", err)
+	}
+}
+
+func TestStateProcessorBlockExecutorDriverExecuteRequiresWorkerID(t *testing.T) {
+	key1, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	sender := crypto.PubkeyToAddress(key1.PublicKey)
+	receiver := common.HexToAddress("0x1212121212121212121212121212121212121212")
+
+	alloc := types.GenesisAlloc{
+		sender: {Balance: big.NewInt(9_000_000_000_000_000_000)},
+	}
+
+	cfg := *params.TestChainConfig
+	signer := types.MakeSigner(&cfg, big.NewInt(1), 1)
+	tx := makeSignedLegacyTx(t, key1, signer, 0, receiver, 21000)
+
+	blockchain, driver, _ := newDriverTestSetup(t, 1_000_000, alloc, types.Transactions{tx}, vm.Config{ParallelExecutionWorkers: 1})
+	defer blockchain.Stop()
+
+	err := driver.Execute(context.Background(), 0)
+	if err == nil || err.Error() != "missing worker ID in execution context" {
+		t.Fatalf("expected missing worker ID error, got %v", err)
+	}
+}
+
+func TestStateProcessorBlockExecutorDriverExecuteRejectsOutOfRangeWorkerID(t *testing.T) {
+	key1, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	sender := crypto.PubkeyToAddress(key1.PublicKey)
+	receiver := common.HexToAddress("0x3434343434343434343434343434343434343434")
+
+	alloc := types.GenesisAlloc{
+		sender: {Balance: big.NewInt(9_000_000_000_000_000_000)},
+	}
+
+	cfg := *params.TestChainConfig
+	signer := types.MakeSigner(&cfg, big.NewInt(1), 1)
+	tx := makeSignedLegacyTx(t, key1, signer, 0, receiver, 21000)
+
+	blockchain, driver, _ := newDriverTestSetup(t, 1_000_000, alloc, types.Transactions{tx}, vm.Config{ParallelExecutionWorkers: 1})
+	defer blockchain.Stop()
+
+	err := driver.Execute(blockexecutor.WithWorkerID(context.Background(), 1), 0)
+	if err == nil || err.Error() != "worker ID 1 out of range [0,1)" {
+		t.Fatalf("expected out-of-range worker ID error, got %v", err)
 	}
 }
 

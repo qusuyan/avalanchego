@@ -102,7 +102,7 @@ func TestStateProcessorParallelExecutorEquivalenceMultiWorker(t *testing.T) {
 	}
 
 	baseline := runMixedOpsBlock(t, alloc, txs, senders, receivers, logContract, storeContract, vm.Config{
-		ParallelExecutionExecutor: "sequential",
+		ParallelExecutionType: "sequential",
 	})
 	if baseline.LogCodeSize == 0 || baseline.StoreCodeSize == 0 {
 		t.Fatalf("expected predeployed contracts to keep non-zero code size")
@@ -124,7 +124,7 @@ func TestStateProcessorParallelExecutorEquivalenceMultiWorker(t *testing.T) {
 		t.Run("workers_"+big.NewInt(int64(workers)).String(), func(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				got := runMixedOpsBlock(t, alloc, txs, senders, receivers, logContract, storeContract, vm.Config{
-					ParallelExecutionExecutor: "sequential-validate",
+					ParallelExecutionType: "sequential-validate",
 					ParallelExecutionWorkers:  workers,
 				})
 				assertRunEquivalent(t, baseline, got)

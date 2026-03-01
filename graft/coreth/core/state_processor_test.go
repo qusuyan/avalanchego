@@ -138,7 +138,7 @@ func testStateProcessorErrors(t *testing.T, executorType string) {
 				GasLimit: cortina.GasLimit,
 			}
 			// FullFaker used to skip header verification that enforces no blobs.
-			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
+			blockchain, _  = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewFullFaker(), vm.Config{ParallelExecutionType: executorType}, common.Hash{}, false)
 			tooBigInitCode = [ethparams.MaxInitCodeSize + 1]byte{}
 		)
 
@@ -304,7 +304,7 @@ func testStateProcessorErrors(t *testing.T, executorType string) {
 				},
 				GasLimit: ap1.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionType: executorType}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {
@@ -344,7 +344,7 @@ func testStateProcessorErrors(t *testing.T, executorType string) {
 				},
 				GasLimit: cortina.GasLimit,
 			}
-			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionExecutor: executorType}, common.Hash{}, false)
+			blockchain, _ = NewBlockChain(db, DefaultCacheConfig, gspec, dummy.NewCoinbaseFaker(), vm.Config{ParallelExecutionType: executorType}, common.Hash{}, false)
 		)
 		defer blockchain.Stop()
 		for i, tt := range []struct {

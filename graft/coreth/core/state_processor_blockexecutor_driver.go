@@ -103,9 +103,9 @@ func (d *stateProcessorBlockExecutorDriver) Execute(ctx context.Context, txIndex
 		return err
 	}
 
+	slot := &d.slots[txIndex]
 	tx := d.txs[txIndex]
 	msg := d.messages[txIndex]
-	slot := &d.slots[txIndex]
 	for {
 		state := slot.state.Load()
 		if state == txSlotRunning {
@@ -120,11 +120,21 @@ func (d *stateProcessorBlockExecutorDriver) Execute(ctx context.Context, txIndex
 		return fmt.Errorf("tx %d has invalid slot state %d", txIndex, state)
 	}
 
-	txState := parallel.NewTxnState(d.blockState, tx.Hash(), txIndex, 1)
+	workerID, err := d.workerIDFromContext(ctx)
+	if err != nil {
+		slot.state.Store(txSlotIdle)
+		return err
+	}
+
+	txState := parallel.NewTxnState(d.blockState, tx.Hash(), txIndex, workerID, 1)
 
 	remainingGasSnapshot := d.remainingGas.Load()
 	gp := new(GasPool).AddGas(remainingGasSnapshot)
-	evm := d.acquireWorkerEVM(ctx, txState, msg)
+	evm, err := d.acquireWorkerEVM(workerID, txState, msg)
+	if err != nil {
+		slot.state.Store(txSlotIdle)
+		return err
+	}
 	evm.Reset(NewEVMTxContext(msg), txState)
 
 	result, err := ApplyMessage(evm, msg, gp)
@@ -232,18 +242,29 @@ func (d *stateProcessorBlockExecutorDriver) consumeGas(gasUsed uint64) (uint64, 
 	}
 }
 
-func (d *stateProcessorBlockExecutorDriver) acquireWorkerEVM(ctx context.Context, txState *parallel.TxnState, msg *Message) *vm.EVM {
+func (d *stateProcessorBlockExecutorDriver) workerIDFromContext(ctx context.Context) (int, error) {
 	workerID, ok := blockexecutor.WorkerIDFromContext(ctx)
 	if !ok {
-		workerID = 0
+		return 0, fmt.Errorf("missing worker ID in execution context")
 	}
+	if workerID < 0 {
+		return 0, fmt.Errorf("invalid worker ID %d", workerID)
+	}
+	return workerID, nil
+}
+
+func (d *stateProcessorBlockExecutorDriver) acquireWorkerEVM(workerID int, txState *parallel.TxnState, msg *Message) (*vm.EVM, error) {
 	if len(d.evmByWorker) == 0 {
-		return vm.NewEVM(d.blockCtx, NewEVMTxContext(msg), txState, d.config, d.vmCfg)
+		return nil, fmt.Errorf("no worker EVMs configured")
 	}
 	if workerID < 0 || workerID >= len(d.evmByWorker) {
-		workerID = 0
+		return nil, fmt.Errorf("worker ID %d out of range [0,%d)", workerID, len(d.evmByWorker))
 	}
-	return d.evmByWorker[workerID]
+	evm := d.evmByWorker[workerID]
+	if evm == nil {
+		return nil, fmt.Errorf("worker EVM for worker ID %d is not initialized", workerID)
+	}
+	return evm, nil
 }
 
 func normalizeWorkerCount(configured int) int {
@@ -259,7 +280,7 @@ func normalizeWorkerCount(configured int) int {
 
 func (d *stateProcessorBlockExecutorDriver) initWorkerEVMs() {
 	// Use one lightweight placeholder tx-state to initialize worker-scoped EVMs.
-	placeholder := parallel.NewTxnState(d.blockState, common.Hash{}, 0, 1)
+	placeholder := parallel.NewTxnState(d.blockState, common.Hash{}, 0, 0, 1)
 	for i := range d.evmByWorker {
 		d.evmByWorker[i] = vm.NewEVM(d.blockCtx, vm.TxContext{}, placeholder, d.config, d.vmCfg)
 	}

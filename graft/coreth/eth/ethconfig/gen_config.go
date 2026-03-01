@@ -35,7 +35,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		TrieDirtyCommitTarget           int
 		TriePrefetcherParallelism       int
 		ParallelExecutionWorkers        int
-		ParallelExecutionExecutor       string
+		ParallelExecutionType           string
 		SnapshotCache                   int
 		Preimages                       bool
 		AcceptedCacheSize               int
@@ -80,7 +80,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.TrieDirtyCommitTarget = c.TrieDirtyCommitTarget
 	enc.TriePrefetcherParallelism = c.TriePrefetcherParallelism
 	enc.ParallelExecutionWorkers = c.ParallelExecutionWorkers
-	enc.ParallelExecutionExecutor = c.ParallelExecutionExecutor
+	enc.ParallelExecutionType = c.ParallelExecutionType
 	enc.SnapshotCache = c.SnapshotCache
 	enc.Preimages = c.Preimages
 	enc.AcceptedCacheSize = c.AcceptedCacheSize
@@ -129,7 +129,7 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		TrieDirtyCommitTarget           *int
 		TriePrefetcherParallelism       *int
 		ParallelExecutionWorkers        *int
-		ParallelExecutionExecutor       *string
+		ParallelExecutionType           *string
 		SnapshotCache                   *int
 		Preimages                       *bool
 		AcceptedCacheSize               *int
@@ -213,8 +213,8 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	if dec.ParallelExecutionWorkers != nil {
 		c.ParallelExecutionWorkers = *dec.ParallelExecutionWorkers
 	}
-	if dec.ParallelExecutionExecutor != nil {
-		c.ParallelExecutionExecutor = *dec.ParallelExecutionExecutor
+	if dec.ParallelExecutionType != nil {
+		c.ParallelExecutionType = *dec.ParallelExecutionType
 	}
 	if dec.SnapshotCache != nil {
 		c.SnapshotCache = *dec.SnapshotCache

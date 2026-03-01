@@ -99,7 +99,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	for i, tx := range block.Transactions() {
 		txHashes[i] = tx.Hash()
 	}
-	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes)
+	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, cfg.ParallelExecutionWorkers)
 	driver, err := newStateProcessorBlockExecutorDriver(p.config, p.bc, block, blockState, cfg)
 	if err != nil {
 		return nil, nil, 0, err
@@ -134,7 +134,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 }
 
 func chooseBlockExecutor(cfg vm.Config) blockexecutor.Executor {
-	execType := strings.ToLower(strings.TrimSpace(cfg.ParallelExecutionExecutor))
+	execType := strings.ToLower(strings.TrimSpace(cfg.ParallelExecutionType))
 	switch execType {
 	case "", blockexecutor.ExecutorTypeSequential:
 		return blockexecutor.NewSequentialExecutor()
