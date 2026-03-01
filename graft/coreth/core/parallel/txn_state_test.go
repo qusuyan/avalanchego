@@ -23,11 +23,11 @@ type recordingBlockState struct {
 	lastReadKey StateObjectKey
 }
 
-func (b *recordingBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
+func (b *recordingBlockState) Exists(common.Address, int) (bool, ObjectVersion, error) {
 	return true, COMMITTED_VERSION, nil
 }
 
-func (b *recordingBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (b *recordingBlockState) Read(key StateObjectKey, _ int) (*VersionedValue, error) {
 	b.lastReadKey = key
 	if key.Kind == StateObjectStorage {
 		return &VersionedValue{Value: NewStorageValue(common.HexToHash("0x99")), Version: COMMITTED_VERSION}, nil
@@ -51,11 +51,11 @@ func (b *recordingBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOpt
 	return common.Hash{}, nil
 }
 
-func (testBlockState) Exists(common.Address) (bool, ObjectVersion, error) {
+func (testBlockState) Exists(common.Address, int) (bool, ObjectVersion, error) {
 	return false, COMMITTED_VERSION, nil
 }
 
-func (testBlockState) Read(key StateObjectKey, _ uint64) (*VersionedValue, error) {
+func (testBlockState) Read(key StateObjectKey, _ int) (*VersionedValue, error) {
 	switch key.Kind {
 	case StateObjectBalance:
 		return &VersionedValue{Value: NewBalanceValue(uint256.NewInt(0)), Version: COMMITTED_VERSION}, nil
@@ -93,7 +93,7 @@ func (testBlockState) Commit(uint64, bool, ...stateconf.StateDBCommitOption) (co
 }
 
 func TestTxnStateReadOwnWrites(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0, 0)
 	addr := common.HexToAddress("0xabc")
 	slot := common.HexToHash("0x2")
 	slot2 := common.HexToHash("0x3")
@@ -131,14 +131,14 @@ func TestTxnStateReadOwnWrites(t *testing.T) {
 }
 
 func TestTxnStateValidatePhase1AlwaysTrue(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1"), 1, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1"), 1, 0, 0)
 	if !tx.Validate() {
 		t.Fatalf("expected Validate() to return true in phase-1 direct wrapper")
 	}
 }
 
 func TestTxnStateLifecycleLastOpWins(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2"), 3, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2"), 3, 0, 0)
 	addr := common.HexToAddress("0xdef")
 
 	tx.SelfDestruct(addr)
@@ -165,7 +165,7 @@ func TestTxnStateStorageCanonicalization(t *testing.T) {
 	defer state.TestOnlyClearRegisteredExtras()
 	state.RegisterExtras(transformTestHooks{})
 
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0, 0)
 	addr := common.HexToAddress("0xabc")
 	slot := common.HexToHash("0x2")
 	value := common.HexToHash("0x55")
@@ -192,7 +192,7 @@ func TestTxnStateStorageReadUsesCanonicalizedKey(t *testing.T) {
 	state.RegisterExtras(transformTestHooks{})
 
 	base := &recordingBlockState{}
-	tx := NewTxnState(base, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(base, common.HexToHash("0x1234"), 2, 0, 0)
 	addr := common.HexToAddress("0xabc")
 	slot := common.HexToHash("0x2")
 	transformedSlot := state.TransformStateKey(addr, slot)
@@ -207,7 +207,7 @@ func TestTxnStateStorageReadUsesCanonicalizedKey(t *testing.T) {
 }
 
 func TestTxnStateSnapshotDirtyBitAndIndices(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0, 0)
 	addr := common.HexToAddress("0xabc")
 
 	if snap := tx.Snapshot(); snap != 0 {
@@ -230,7 +230,7 @@ func TestTxnStateSnapshotDirtyBitAndIndices(t *testing.T) {
 }
 
 func TestTxnStateRevertToSnapshotRestoresWriteSetAndTxnLocalData(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1111"), 7, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1111"), 7, 0, 0)
 	addr := common.HexToAddress("0xabcd")
 	slot := common.HexToHash("0x1")
 	log1 := &types.Log{Address: addr}
@@ -291,7 +291,7 @@ func TestTxnStateRevertToSnapshotRestoresWriteSetAndTxnLocalData(t *testing.T) {
 }
 
 func TestTxnStateRevertToZeroSnapshotResetsTrackedState(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2222"), 3, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x2222"), 3, 0, 0)
 	addr := common.HexToAddress("0x1234")
 	slot := common.HexToHash("0x7")
 
@@ -332,7 +332,7 @@ func TestTxnStateSnapshotRevertPreservesSnapshotLineage(t *testing.T) {
 	addr1 := common.HexToAddress("0xabc")
 	addr2 := common.HexToAddress("0xdef")
 
-	txn := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	txn := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0, 0)
 	txn.AddAddressToAccessList(addr1)
 
 	snapshot1 := txn.Snapshot()
@@ -388,7 +388,7 @@ func TestTxnStateSnapshotRevertPreservesSnapshotLineage(t *testing.T) {
 }
 
 func TestTxnExistsCreatAfterDestruct(t *testing.T) {
-	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0)
+	tx := NewTxnState(testBlockState{}, common.HexToHash("0x1234"), 2, 0, 0)
 	addr := common.HexToAddress("0xabc")
 
 	tx.CreateAccount(addr)
