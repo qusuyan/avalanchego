@@ -11,9 +11,11 @@ import (
 	"github.com/ava-labs/avalanchego/upgrade"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/rawdb"
+	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
 	"github.com/ava-labs/libevm/crypto"
+	"github.com/holiman/uint256"
 )
 
 const (
@@ -124,10 +126,66 @@ func TestStateProcessorParallelExecutorEquivalenceMultiWorker(t *testing.T) {
 		t.Run("workers_"+big.NewInt(int64(workers)).String(), func(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				got := runMixedOpsBlock(t, alloc, txs, senders, receivers, logContract, storeContract, vm.Config{
-					ParallelExecutionType: "sequential-validate",
-					ParallelExecutionWorkers:  workers,
+					ParallelExecutionType:    "sequential-validate",
+					ParallelExecutionWorkers: workers,
 				})
 				assertRunEquivalent(t, baseline, got)
+			}
+		})
+	}
+}
+
+func TestStateProcessorProcessFinalizesAcrossExecutionModes(t *testing.T) {
+	finalizeAddr := common.HexToAddress("0xf100000000000000000000000000000000000001")
+
+	for _, tc := range []struct {
+		name  string
+		vmCfg vm.Config
+	}{
+		{name: "serial", vmCfg: vm.Config{}},
+		{name: "parallel-sequential", vmCfg: vm.Config{ParallelExecutionType: "sequential"}},
+		{name: "parallel-sequential-validate", vmCfg: vm.Config{ParallelExecutionType: "sequential-validate", ParallelExecutionWorkers: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalizeCalls := 0
+			engine := dummy.NewFakerWithMode(dummy.ConsensusCallbacks{
+				OnExtraStateChange: func(block *types.Block, parent *types.Header, statedb *state.StateDB) (*big.Int, *big.Int, error) {
+					finalizeCalls++
+					statedb.SetBalance(finalizeAddr, uint256.NewInt(77))
+					return nil, big.NewInt(0), nil
+				},
+			}, dummy.Mode{ModeSkipBlockFee: true, ModeSkipCoinbase: true})
+
+			cfgCopy := *params.TestChainConfig
+			cfg := &cfgCopy
+			db := rawdb.NewMemoryDatabase()
+			gspec := &Genesis{
+				Config:    cfg,
+				Timestamp: uint64(upgrade.InitiallyActiveTime.Unix()),
+				Alloc:     types.GenesisAlloc{},
+				GasLimit:  15_000_000,
+			}
+			blockchain, err := NewBlockChain(db, DefaultCacheConfig, gspec, engine, tc.vmCfg, common.Hash{}, false)
+			if err != nil {
+				t.Fatalf("failed to build blockchain: %v", err)
+			}
+			defer blockchain.Stop()
+
+			parent := gspec.ToBlock()
+			block := GenerateBadBlock(parent, engine, nil, cfg)
+			statedb, err := blockchain.StateAt(parent.Root())
+			if err != nil {
+				t.Fatalf("failed to open parent state: %v", err)
+			}
+
+			if _, _, _, err := blockchain.processor.Process(block, parent.Header(), statedb, tc.vmCfg); err != nil {
+				t.Fatalf("process failed: %v", err)
+			}
+			if finalizeCalls != 1 {
+				t.Fatalf("expected finalize to be called once, got %d", finalizeCalls)
+			}
+			if got := statedb.GetBalance(finalizeAddr); got.Cmp(uint256.NewInt(77)) != 0 {
+				t.Fatalf("expected finalize state mutation to be visible, got %s", got)
 			}
 		})
 	}

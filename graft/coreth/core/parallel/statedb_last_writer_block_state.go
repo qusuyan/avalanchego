@@ -9,6 +9,7 @@ import (
 	"github.com/ava-labs/libevm/core/state"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/libevm/stateconf"
+	"github.com/holiman/uint256"
 )
 
 type ExistsState struct {
@@ -40,9 +41,6 @@ type StateDBLastWriterBlockState struct {
 	txHashs []common.Hash
 
 	mu sync.RWMutex
-	// stateMu serializes access to underlying StateDB, which is not thread-safe
-	// even for logical reads due to internal cache/map mutation.
-	stateMu sync.Mutex
 
 	// Sticky shared error: first DB/state failure wins.
 	dbErr error
@@ -113,11 +111,7 @@ func (b *StateDBLastWriterBlockState) loadAccountCache(addr common.Address) (*st
 		return nil, false
 	}
 	ptr := value.(*atomic.Pointer[state.ParallelAccountCache])
-	cache := ptr.Load()
-	if cache == nil {
-		return nil, false
-	}
-	return cache, true
+	return ptr.Load(), true
 }
 
 func (b *StateDBLastWriterBlockState) loadStorageCache(addr common.Address, slot common.Hash) *common.Hash {
@@ -214,20 +208,21 @@ func (b *StateDBLastWriterBlockState) Error() error {
 	return b.dbErr
 }
 
-func (b *StateDBLastWriterBlockState) readerIndexForWorker(workerID int) (int, error) {
+func (b *StateDBLastWriterBlockState) stateReaderForWorker(workerID int) (*state.ParallelReader, error) {
 	if len(b.readers) == 0 {
-		return 0, fmt.Errorf("no baseline readers configured")
+		return nil, fmt.Errorf("no baseline readers configured")
 	}
 	if workerID < 0 {
-		return 0, fmt.Errorf("invalid worker ID %d", workerID)
+		return nil, fmt.Errorf("invalid worker ID %d", workerID)
 	}
 	if workerID >= len(b.readers) {
-		return 0, fmt.Errorf("worker ID %d out of range [0,%d)", workerID, len(b.readers))
+		return nil, fmt.Errorf("worker ID %d out of range [0,%d)", workerID, len(b.readers))
 	}
-	if b.readers[workerID] == nil {
-		return 0, fmt.Errorf("baseline reader for worker ID %d is not initialized", workerID)
+	reader := b.readers[workerID]
+	if reader == nil {
+		return nil, fmt.Errorf("baseline reader for worker ID %d is not initialized", workerID)
 	}
-	return workerID, nil
+	return reader, nil
 }
 
 func (b *StateDBLastWriterBlockState) getOrLoadAccountCache(addr common.Address, workerID int) (*state.ParallelAccountCache, error) {
@@ -237,14 +232,14 @@ func (b *StateDBLastWriterBlockState) getOrLoadAccountCache(addr common.Address,
 	if len(b.readers) == 0 {
 		return nil, fmt.Errorf("nil baseline reader")
 	}
-	readerIndex, err := b.readerIndexForWorker(workerID)
-	if err != nil {
-		return nil, err
-	}
 	if cache, ok := b.loadAccountCache(addr); ok {
 		return cache, nil
 	}
-	cache, err := b.readers[readerIndex].GetAccount(addr)
+	reader, err := b.stateReaderForWorker(workerID)
+	if err != nil {
+		return nil, err
+	}
+	cache, err := reader.GetAccount(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -259,14 +254,14 @@ func (b *StateDBLastWriterBlockState) getOrLoadStorage(addr common.Address, slot
 	if len(b.readers) == 0 {
 		return common.Hash{}, fmt.Errorf("nil baseline reader")
 	}
-	readerIndex, err := b.readerIndexForWorker(workerID)
-	if err != nil {
-		return common.Hash{}, err
-	}
 	if cache := b.loadStorageCache(addr, slot); cache != nil {
 		return *cache, nil
 	}
-	value, err := b.readers[readerIndex].GetState(addr, slot, stateconf.SkipStateKeyTransformation())
+	reader, err := b.stateReaderForWorker(workerID)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	value, err := reader.GetState(addr, slot, stateconf.SkipStateKeyTransformation())
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -283,7 +278,7 @@ func (b *StateDBLastWriterBlockState) Exists(addr common.Address, workerID int) 
 	if err != nil {
 		return false, ERROR_VERSION, err
 	}
-	return cache.Exists, COMMITTED_VERSION, nil
+	return cache != nil, COMMITTED_VERSION, nil
 }
 
 func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, workerID int) (*VersionedValue, error) {
@@ -303,8 +298,9 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, workerID int) (*V
 	if err != nil {
 		return nil, err
 	}
-	b.stateMu.Lock()
-	defer b.stateMu.Unlock()
+	if cache == nil || cache.Data == nil {
+		return &VersionedValue{Value: zeroStateObjectValue(key.Kind), Version: COMMITTED_VERSION}, nil
+	}
 
 	switch key.Kind {
 	case StateObjectBalance:
@@ -316,6 +312,7 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, workerID int) (*V
 	case StateObjectCode:
 		return &VersionedValue{Value: NewCodeValue(cache.Code), Version: COMMITTED_VERSION}, nil
 	case StateObjectStorage:
+		// The current implementation of GetState involves an extra read for account data, but in almost all workloads account would be read before state so it would be a cache hit.
 		value, err := b.getOrLoadStorage(key.Address, key.Slot, workerID)
 		if err != nil {
 			return nil, err
@@ -325,6 +322,25 @@ func (b *StateDBLastWriterBlockState) Read(key StateObjectKey, workerID int) (*V
 		return &VersionedValue{Value: NewExtraValue(cache.Data.Extra), Version: COMMITTED_VERSION}, nil
 	default:
 		return nil, fmt.Errorf("unknown state object kind: %d", key.Kind)
+	}
+}
+
+func zeroStateObjectValue(kind StateObjectKind) StateObjectValue {
+	switch kind {
+	case StateObjectBalance:
+		return NewBalanceValue(uint256.NewInt(0))
+	case StateObjectNonce:
+		return NewNonceValue(0)
+	case StateObjectCodeHash:
+		return NewCodeHashValue(common.BytesToHash(types.EmptyCodeHash.Bytes()))
+	case StateObjectCode:
+		return NewCodeValue(nil)
+	case StateObjectStorage:
+		return NewStorageValue(common.Hash{})
+	case StateObjectExtra:
+		return NewExtraValue(nil)
+	default:
+		return StateObjectValue{}
 	}
 }
 
@@ -410,13 +426,13 @@ func (b *StateDBLastWriterBlockState) AddPreimages(txIndex int, preimages map[co
 	return nil
 }
 
-func (b *StateDBLastWriterBlockState) ValidateReadSet(rs *TxReadSet) bool {
+func (b *StateDBLastWriterBlockState) ValidateReadSet(rs *TxReadSet, workerID int) bool {
 	if rs == nil {
 		return true
 	}
 
 	for addr, observedVersion := range rs.accountExistsVersion {
-		_, currentVersion, err := b.Exists(addr, 0)
+		_, currentVersion, err := b.Exists(addr, workerID)
 		if err != nil {
 			b.setError(err)
 			return false
@@ -427,7 +443,7 @@ func (b *StateDBLastWriterBlockState) ValidateReadSet(rs *TxReadSet) bool {
 	}
 
 	for key, observedVersion := range rs.objectVersions {
-		current, err := b.Read(key, 0)
+		current, err := b.Read(key, workerID)
 		if err != nil {
 			b.setError(err)
 			return false
@@ -545,7 +561,7 @@ func (b *StateDBLastWriterBlockState) preloadCanonicalState() error {
 	})
 	for addr := range addresses {
 		cache, ok := b.loadAccountCache(addr)
-		if !ok || cache == nil || !cache.Exists {
+		if !ok || cache == nil {
 			continue
 		}
 		preload := cache.Clone()

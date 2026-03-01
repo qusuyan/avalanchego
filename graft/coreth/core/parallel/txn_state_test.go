@@ -43,7 +43,7 @@ func (b *recordingBlockState) AddLogs(int, []*types.Log) error { return nil }
 
 func (b *recordingBlockState) AddPreimages(int, map[common.Hash][]byte) error { return nil }
 
-func (b *recordingBlockState) ValidateReadSet(*TxReadSet) bool { return true }
+func (b *recordingBlockState) ValidateReadSet(*TxReadSet, int) bool { return true }
 
 func (b *recordingBlockState) WriteBack() error { return nil }
 
@@ -82,7 +82,7 @@ func (testBlockState) AddLogs(int, []*types.Log) error { return nil }
 
 func (testBlockState) AddPreimages(int, map[common.Hash][]byte) error { return nil }
 
-func (testBlockState) ValidateReadSet(*TxReadSet) bool { return true }
+func (testBlockState) ValidateReadSet(*TxReadSet, int) bool { return true }
 
 func (testBlockState) WriteBack() error {
 	return nil

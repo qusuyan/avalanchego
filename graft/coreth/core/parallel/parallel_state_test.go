@@ -123,7 +123,7 @@ func TestValidateReadSetMatchesCurrentVersions(t *testing.T) {
 		t.Fatalf("unexpected existing version when recording object")
 	}
 
-	if !blockState.ValidateReadSet(readSet) {
+	if !blockState.ValidateReadSet(readSet, 0) {
 		t.Fatalf("expected read-set validation to succeed for unchanged versions")
 	}
 }
@@ -164,7 +164,7 @@ func TestValidateReadSetDetectsVersionMismatches(t *testing.T) {
 		t.Fatalf("failed to apply write-set: %v", err)
 	}
 
-	if blockState.ValidateReadSet(readSet) {
+	if blockState.ValidateReadSet(readSet, 0) {
 		t.Fatalf("expected read-set validation to fail on version mismatch")
 	}
 }
@@ -318,7 +318,7 @@ func TestConcurrentBaselineReadsShareCacheAndValidate(t *testing.T) {
 			}
 			readSet.RecordObjectVersion(StorageKey(addr, slot), stateValue.Version)
 
-			if !blockState.ValidateReadSet(readSet) {
+			if !blockState.ValidateReadSet(readSet, workerID) {
 				errCh <- testingError("expected read-set validation to succeed")
 				return
 			}
@@ -331,7 +331,7 @@ func TestConcurrentBaselineReadsShareCacheAndValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cache, ok := blockState.loadAccountCache(addr); !ok || cache == nil || !cache.Exists {
+	if cache, ok := blockState.loadAccountCache(addr); !ok || cache == nil || cache.Data == nil {
 		t.Fatal("expected shared account cache entry to be populated")
 	}
 	if cache := blockState.loadStorageCache(addr, slot); cache == nil || *cache != common.HexToHash("0x44") {

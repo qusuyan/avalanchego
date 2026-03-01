@@ -18,7 +18,7 @@ type BlockState interface {
 	ApplyWriteSet(txIndex int, version ObjectVersion, ws *TxWriteSet) error
 	AddLogs(txIndex int, logs []*types.Log) error
 	AddPreimages(txIndex int, preimages map[common.Hash][]byte) error
-	ValidateReadSet(rs *TxReadSet) bool
+	ValidateReadSet(rs *TxReadSet, workerID int) bool
 	WriteBack() error
 	Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error)
 }
@@ -146,7 +146,7 @@ func (b *SequentialBlockState) AddPreimages(_ int, preimages map[common.Hash][]b
 	return nil
 }
 
-func (b *SequentialBlockState) ValidateReadSet(_ *TxReadSet) bool {
+func (b *SequentialBlockState) ValidateReadSet(_ *TxReadSet, _ int) bool {
 	return true
 }
 

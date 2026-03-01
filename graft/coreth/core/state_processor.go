@@ -73,11 +73,8 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
 func (p *StateProcessor) Process(block *types.Block, parent *types.Header, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error) {
-	var (
-		receipts types.Receipts
-		header   = block.Header()
-		allLogs  []*types.Log
-	)
+
+	header := block.Header()
 
 	// Configure any upgrades that should go into effect during this block.
 	blockContext := NewBlockContext(block.Number(), block.Time())
@@ -90,21 +87,70 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	var (
 		context = NewEVMBlockContext(header, p.bc, nil)
 		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
+		signer  = types.MakeSigner(p.config, header.Number, header.Time)
 	)
 
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		ProcessBeaconBlockRoot(*beaconRoot, vmenv, statedb)
 	}
+	execType := normalizedParallelExecutionType(cfg)
+	if execType == "" {
+		return p.processSerial(block, parent, statedb, cfg, vmenv, signer)
+	} else {
+		return p.processParallel(block, parent, statedb, cfg, execType)
+	}
+
+}
+
+func (p *StateProcessor) processSerial(block *types.Block, parent *types.Header, statedb *state.StateDB, cfg vm.Config, vmenv *vm.EVM, signer types.Signer) (types.Receipts, []*types.Log, uint64, error) {
+	var (
+		header   = block.Header()
+		gp       = new(GasPool).AddGas(block.GasLimit())
+		usedGas  uint64
+		allLogs  []*types.Log
+		receipts = make(types.Receipts, 0, len(block.Transactions()))
+	)
+
+	for i, tx := range block.Transactions() {
+		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+		}
+		statedb.SetTxContext(tx.Hash(), i)
+		receipt, err := applyTransaction(msg, p.config, gp, statedb, header.Number, block.Hash(), tx, &usedGas, vmenv)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+		}
+		receipts = append(receipts, receipt)
+		allLogs = append(allLogs, receipt.Logs...)
+	}
+
+	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
+	if err := p.engine.Finalize(p.bc, block, parent, statedb, receipts); err != nil {
+		return nil, nil, 0, fmt.Errorf("engine finalization check failed: %w", err)
+	}
+
+	return receipts, allLogs, usedGas, nil
+}
+
+func (p *StateProcessor) processParallel(block *types.Block, parent *types.Header, statedb *state.StateDB, cfg vm.Config, execType string) (types.Receipts, []*types.Log, uint64, error) {
+	var (
+		allLogs  []*types.Log
+		receipts types.Receipts
+	)
+
+	parallelCfg := cfg
+	parallelCfg.ParallelExecutionWorkers = normalizeWorkerCount(cfg.ParallelExecutionWorkers)
 	txHashes := make([]common.Hash, len(block.Transactions()))
 	for i, tx := range block.Transactions() {
 		txHashes[i] = tx.Hash()
 	}
-	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, cfg.ParallelExecutionWorkers)
-	driver, err := newStateProcessorBlockExecutorDriver(p.config, p.bc, block, blockState, cfg)
+	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, parallelCfg.ParallelExecutionWorkers)
+	driver, err := newStateProcessorBlockExecutorDriver(p.config, p.bc, block, blockState, parallelCfg)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	executor := chooseBlockExecutor(cfg)
+	executor := chooseBlockExecutor(execType, parallelCfg)
 	receipts, err = executor.Run(stdctx.Background(), driver)
 	if err != nil {
 		if txErr, ok := err.(*blockexecutor.TxIndexedError); ok &&
@@ -133,10 +179,13 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	return receipts, allLogs, usedGas, nil
 }
 
-func chooseBlockExecutor(cfg vm.Config) blockexecutor.Executor {
-	execType := strings.ToLower(strings.TrimSpace(cfg.ParallelExecutionType))
+func normalizedParallelExecutionType(cfg vm.Config) string {
+	return strings.ToLower(strings.TrimSpace(cfg.ParallelExecutionType))
+}
+
+func chooseBlockExecutor(execType string, cfg vm.Config) blockexecutor.Executor {
 	switch execType {
-	case "", blockexecutor.ExecutorTypeSequential:
+	case blockexecutor.ExecutorTypeSequential:
 		return blockexecutor.NewSequentialExecutor()
 	case blockexecutor.ExecutorTypeSequentialValidate:
 		return blockexecutor.NewSequentialValidateExecutor(blockexecutor.Config{

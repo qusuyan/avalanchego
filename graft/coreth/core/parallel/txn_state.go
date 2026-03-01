@@ -77,6 +77,10 @@ func (t *TxnState) TxIndex() int {
 	return t.txIndex
 }
 
+func (t *TxnState) WorkerID() int {
+	return t.workerID
+}
+
 func (t *TxnState) ReadSet() *TxReadSet {
 	return t.readSet
 }

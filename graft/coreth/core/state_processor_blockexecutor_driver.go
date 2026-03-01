@@ -195,7 +195,7 @@ func (d *stateProcessorBlockExecutorDriver) Validate(txIndex int) (bool, error) 
 	if result.gasUsed > d.remainingGas.Load() {
 		return false, ErrGasLimitReached
 	}
-	return d.blockState.ValidateReadSet(result.txState.ReadSet()), nil
+	return d.blockState.ValidateReadSet(result.txState.ReadSet(), result.txState.WorkerID()), nil
 }
 
 func (d *stateProcessorBlockExecutorDriver) Commit(txIndex int) (*types.Receipt, error) {
