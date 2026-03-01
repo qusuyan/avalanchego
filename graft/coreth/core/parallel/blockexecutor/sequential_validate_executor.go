@@ -78,7 +78,7 @@ func (e *SequentialValidateExecutor) Run(ctx context.Context, d Driver) (types.R
 
 			// Always prioritize validation.
 			if slots[committed].CompareAndSwap(slotReady, slotClaimed) {
-				valid, err := d.Validate(committed)
+				valid, err := d.Validate(workerCtx, committed)
 				if err != nil {
 					storeErr(&TxIndexedError{Index: committed, Err: err})
 					return

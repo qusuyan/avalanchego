@@ -21,7 +21,7 @@ type Executor interface {
 type Driver interface {
 	TxCount() int
 	Execute(ctx context.Context, txIndex int) error
-	Validate(txIndex int) (bool, error)
+	Validate(ctx context.Context, txIndex int) (bool, error)
 	Commit(txIndex int) (*types.Receipt, error)
 }
 

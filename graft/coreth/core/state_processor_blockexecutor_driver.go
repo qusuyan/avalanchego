@@ -179,9 +179,13 @@ func (d *stateProcessorBlockExecutorDriver) Execute(ctx context.Context, txIndex
 	return nil
 }
 
-func (d *stateProcessorBlockExecutorDriver) Validate(txIndex int) (bool, error) {
+func (d *stateProcessorBlockExecutorDriver) Validate(ctx context.Context, txIndex int) (bool, error) {
 	if txIndex < 0 || txIndex >= len(d.txs) {
 		return false, fmt.Errorf("tx index %d out of range", txIndex)
+	}
+	workerID, err := d.workerIDFromContext(ctx)
+	if err != nil {
+		return false, err
 	}
 	slot := &d.slots[txIndex]
 	if slot.state.Load() != txSlotReady {
@@ -195,7 +199,7 @@ func (d *stateProcessorBlockExecutorDriver) Validate(txIndex int) (bool, error) 
 	if result.gasUsed > d.remainingGas.Load() {
 		return false, ErrGasLimitReached
 	}
-	return d.blockState.ValidateReadSet(result.txState.ReadSet(), result.txState.WorkerID()), nil
+	return d.blockState.ValidateReadSet(result.txState.ReadSet(), workerID), nil
 }
 
 func (d *stateProcessorBlockExecutorDriver) Commit(txIndex int) (*types.Receipt, error) {

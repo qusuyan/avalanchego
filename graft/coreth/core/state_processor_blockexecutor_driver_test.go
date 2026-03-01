@@ -17,9 +17,52 @@ import (
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/core/vm"
 	"github.com/ava-labs/libevm/crypto"
+	"github.com/ava-labs/libevm/libevm/stateconf"
 	"github.com/ava-labs/libevm/trie"
 	"github.com/holiman/uint256"
 )
+
+type validateWorkerRecordingBlockState struct {
+	inner             parallel.BlockState
+	validateWorkerIDs []int
+}
+
+func (b *validateWorkerRecordingBlockState) Exists(addr common.Address, workerID int) (bool, parallel.ObjectVersion, error) {
+	return b.inner.Exists(addr, workerID)
+}
+
+func (b *validateWorkerRecordingBlockState) Read(key parallel.StateObjectKey, workerID int) (*parallel.VersionedValue, error) {
+	return b.inner.Read(key, workerID)
+}
+
+func (b *validateWorkerRecordingBlockState) Logs() []*types.Log {
+	return b.inner.Logs()
+}
+
+func (b *validateWorkerRecordingBlockState) ApplyWriteSet(txIndex int, version parallel.ObjectVersion, ws *parallel.TxWriteSet) error {
+	return b.inner.ApplyWriteSet(txIndex, version, ws)
+}
+
+func (b *validateWorkerRecordingBlockState) AddLogs(txIndex int, logs []*types.Log) error {
+	return b.inner.AddLogs(txIndex, logs)
+}
+
+func (b *validateWorkerRecordingBlockState) AddPreimages(txIndex int, preimages map[common.Hash][]byte) error {
+	return b.inner.AddPreimages(txIndex, preimages)
+}
+
+func (b *validateWorkerRecordingBlockState) ValidateReadSet(rs *parallel.TxReadSet, workerID int) bool {
+	b.validateWorkerIDs = append(b.validateWorkerIDs, workerID)
+	return b.inner.ValidateReadSet(rs, workerID)
+}
+
+func (b *validateWorkerRecordingBlockState) WriteBack() error {
+	return b.inner.WriteBack()
+}
+
+func (b *validateWorkerRecordingBlockState) Commit(block uint64, deleteEmptyObjects bool, opts ...stateconf.StateDBCommitOption) (common.Hash, error) {
+	return b.inner.Commit(block, deleteEmptyObjects, opts...)
+}
 
 func makeSignedLegacyTx(t *testing.T, key *ecdsa.PrivateKey, signer types.Signer, nonce uint64, to common.Address, gasLimit uint64) *types.Transaction {
 	t.Helper()
@@ -261,6 +304,43 @@ func TestStateProcessorBlockExecutorDriverConcurrentExecute(t *testing.T) {
 	}
 	if _, err := driver.Commit(1); err != nil {
 		t.Fatalf("commit tx1 failed: %v", err)
+	}
+}
+
+func TestStateProcessorBlockExecutorDriverValidateUsesValidatingWorkerID(t *testing.T) {
+	key1, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	sender := crypto.PubkeyToAddress(key1.PublicKey)
+	receiver := common.HexToAddress("0x4545454545454545454545454545454545454545")
+
+	alloc := types.GenesisAlloc{
+		sender: {Balance: big.NewInt(9_000_000_000_000_000_000)},
+	}
+
+	cfg := *params.TestChainConfig
+	signer := types.MakeSigner(&cfg, big.NewInt(1), 1)
+	tx := makeSignedLegacyTx(t, key1, signer, 0, receiver, 21000)
+
+	blockchain, driver, statedb := newDriverTestSetup(t, 1_000_000, alloc, types.Transactions{tx}, vm.Config{ParallelExecutionWorkers: 2})
+	defer blockchain.Stop()
+
+	txHashes := []common.Hash{tx.Hash()}
+	recordingBlockState := &validateWorkerRecordingBlockState{
+		inner: parallel.NewStateDBLastWriterBlockState(statedb, txHashes, 2),
+	}
+	driver.blockState = recordingBlockState
+
+	if err := driver.Execute(blockexecutor.WithWorkerID(context.Background(), 0), 0); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	valid, err := driver.Validate(blockexecutor.WithWorkerID(context.Background(), 1), 0)
+	if err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	if !valid {
+		t.Fatalf("expected read-set validation to succeed")
+	}
+	if len(recordingBlockState.validateWorkerIDs) != 1 || recordingBlockState.validateWorkerIDs[0] != 1 {
+		t.Fatalf("expected validation to use worker 1, got %v", recordingBlockState.validateWorkerIDs)
 	}
 }
 

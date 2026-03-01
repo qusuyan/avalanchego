@@ -16,6 +16,7 @@ type testDriver struct {
 
 	execCalls        map[int]int
 	validateCalls    map[int]int
+	validateWorkers  map[int][]int
 	commitOrder      []int
 	failValidateOnce map[int]bool
 
@@ -27,6 +28,7 @@ func newTestDriver(txCount int, failValidateOnce map[int]bool) *testDriver {
 		txCount:          txCount,
 		execCalls:        make(map[int]int),
 		validateCalls:    make(map[int]int),
+		validateWorkers:  make(map[int][]int),
 		failValidateOnce: failValidateOnce,
 	}
 }
@@ -43,10 +45,13 @@ func (d *testDriver) Execute(ctx context.Context, txIndex int) error {
 	return nil
 }
 
-func (d *testDriver) Validate(txIndex int) (bool, error) {
+func (d *testDriver) Validate(ctx context.Context, txIndex int) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.validateCalls[txIndex]++
+	if workerID, ok := WorkerIDFromContext(ctx); ok {
+		d.validateWorkers[txIndex] = append(d.validateWorkers[txIndex], workerID)
+	}
 	if d.failValidateOnce[txIndex] {
 		delete(d.failValidateOnce, txIndex)
 		return false, nil
@@ -130,6 +135,28 @@ func TestSequentialValidateExecutorPropagatesExecutionError(t *testing.T) {
 	_, err := ex.Run(context.Background(), drv)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestSequentialValidateExecutorPassesWorkerContextToValidate(t *testing.T) {
+	drv := newTestDriver(4, map[int]bool{})
+	ex := NewSequentialValidateExecutor(Config{Workers: 2})
+
+	_, err := ex.Run(context.Background(), drv)
+	if err != nil {
+		t.Fatalf("executor run failed: %v", err)
+	}
+
+	for txIndex := 0; txIndex < 4; txIndex++ {
+		workers := drv.validateWorkers[txIndex]
+		if len(workers) == 0 {
+			t.Fatalf("expected validate worker for tx %d", txIndex)
+		}
+		for _, workerID := range workers {
+			if workerID < 0 || workerID >= 2 {
+				t.Fatalf("unexpected validate worker ID %d for tx %d", workerID, txIndex)
+			}
+		}
 	}
 }
 
