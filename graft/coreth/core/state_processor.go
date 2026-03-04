@@ -120,7 +120,6 @@ func (p *StateProcessor) processDebug(block *types.Block, parent *types.Header, 
 	for i, tx := range block.Transactions() {
 		txHashes[i] = tx.Hash()
 	}
-	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, 1)
 
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
@@ -130,6 +129,7 @@ func (p *StateProcessor) processDebug(block *types.Block, parent *types.Header, 
 		txHash := tx.Hash()
 		blockNumber := header.Number
 		blockHash := header.Hash()
+		blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, 1)
 		txnState := parallel.NewTxnState(blockState, txHash, i, 0, 1)
 		// receipt, err := applyTransaction(msg, p.config, gp, statedb, header.Number, block.Hash(), tx, &usedGas, vmenv)
 		// Create a new context to be used in the EVM environment.
