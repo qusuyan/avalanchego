@@ -130,6 +130,7 @@ func (p *StateProcessor) processSerial(block *types.Block, parent *types.Header,
 		if err != nil {
 			return nil, nil, 0, err
 		}
+		usedGas += result.UsedGas
 		receipt := &types.Receipt{Type: tx.Type(), PostState: nil, CumulativeGasUsed: usedGas}
 		if result.Failed() {
 			receipt.Status = types.ReceiptStatusFailed
