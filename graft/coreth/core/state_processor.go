@@ -303,11 +303,11 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	}
 
 	var root []byte
-	if config.IsByzantium(blockNumber) {
-		statedb.Finalise(true)
-	} else {
-		root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
-	}
+	// if config.IsByzantium(blockNumber) {
+	// 	statedb.Finalise(true)
+	// } else {
+	root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
+	// }
 	*usedGas += result.UsedGas
 
 	fmt.Printf("Txn %d: root is %x\n", statedb.TxIndex(), root)
