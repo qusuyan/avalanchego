@@ -111,65 +111,18 @@ func (p *StateProcessor) processSerial(block *types.Block, parent *types.Header,
 		receipts = make(types.Receipts, 0, len(block.Transactions()))
 	)
 
-	txHashes := make([]common.Hash, len(block.Transactions()))
-	for i, tx := range block.Transactions() {
-		txHashes[i] = tx.Hash()
-	}
-
-	blockState := parallel.NewStateDBLastWriterBlockState(statedb, txHashes, 1)
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		txState := parallel.NewTxnState(blockState, tx.Hash(), i, 0, 1)
-		// Apply the transaction to the current state (included in the env).
-		txContext := NewEVMTxContext(msg)
-		vmenv.Reset(txContext, txState)
-		result, err := ApplyMessage(vmenv, msg, gp)
+		statedb.SetTxContext(tx.Hash(), i)
+		receipt, err := applyTransaction(msg, p.config, gp, statedb, header.Number, block.Hash(), tx, &usedGas, vmenv)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		receipt := &types.Receipt{Type: tx.Type(), PostState: nil, CumulativeGasUsed: usedGas}
-		if result.Failed() {
-			receipt.Status = types.ReceiptStatusFailed
-		} else {
-			receipt.Status = types.ReceiptStatusSuccessful
-		}
-		receipt.TxHash = tx.Hash()
-		receipt.GasUsed = result.UsedGas
-
-		if tx.Type() == types.BlobTxType {
-			receipt.BlobGasUsed = uint64(len(tx.BlobHashes()) * ethparams.BlobTxBlobGasPerBlob)
-			receipt.BlobGasPrice = vmenv.Context.BlobBaseFee
-		}
-
-		// If the transaction created a contract, store the creation address in the receipt.
-		if msg.To == nil {
-			receipt.ContractAddress = crypto.CreateAddress(vmenv.TxContext.Origin, tx.Nonce())
-		}
-
-		// Set the receipt logs and create the bloom filter.
-		blockNumber := header.Number
-		blockHash := header.Hash()
-		receipt.Logs = txState.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
-		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
-		receipt.BlockHash = blockHash
-		receipt.BlockNumber = blockNumber
-		receipt.TransactionIndex = uint(i)
-		if err := txState.CommitTxn(); err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to commit transaction state: %w", err)
-		}
-		// receipt, err := applyTransaction(msg, p.config, gp, statedb, header.Number, block.Hash(), tx, &usedGas, vmenv)
-		// if err != nil {
-		// 	return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-		// }
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
-	}
-
-	if err := blockState.WriteBack(); err != nil {
-		return nil, nil, 0, fmt.Errorf("failed to write back block state: %w", err)
 	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
