@@ -188,6 +188,7 @@ func (t *TxnState) GetCode(addr common.Address) []byte {
 
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
 	codeHash := crypto.Keccak256Hash(code)
+	fmt.Printf("TxnState: SetCode(%x) -> %d, %x\n", addr, len(code), codeHash)
 	t.write(CodeKey(addr), NewCodeValue(code))
 	t.write(CodeHashKey(addr), NewCodeHashValue(codeHash))
 }
