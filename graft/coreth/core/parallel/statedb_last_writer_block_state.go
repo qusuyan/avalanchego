@@ -478,8 +478,10 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 		}
 		if value.Exists {
 			b.statedb.CreateAccount(addr)
+			fmt.Printf("%x: CreateAccount(%x)\n", value.Version, addr)
 		} else {
 			b.statedb.SelfDestruct(addr)
+			fmt.Printf("%x: SelfDestruct(%x)\n", value.Version, addr)
 		}
 		return true
 	})
@@ -500,23 +502,28 @@ func (b *StateDBLastWriterBlockState) WriteBack() error {
 					// Account is destructed in this block - skip its balance
 				} else {
 					b.statedb.SetBalance(key.Address, balance)
+					fmt.Printf("%x: SetBalance(%x) -> %d\n", objectState.Version, key.Address, balance)
 				}
 			}
 		case StateObjectNonce:
 			if nonce, ok := objectState.Value.Nonce(); ok {
 				b.statedb.SetNonce(key.Address, nonce)
+				fmt.Printf("%x: SetNonce(%x) -> %d\n", objectState.Version, key.Address, nonce)
 			}
 		case StateObjectCode:
 			if code, ok := objectState.Value.Code(); ok {
 				b.statedb.SetCode(key.Address, code)
+				fmt.Printf("%x: SetCode(%x) -> %d\n", objectState.Version, key.Address, len(code))
 			}
 		case StateObjectStorage:
 			if storageValue, ok := objectState.Value.Storage(); ok {
 				b.statedb.SetState(key.Address, key.Slot, storageValue, stateconf.SkipStateKeyTransformation())
+				fmt.Printf("%x: SetState(%x, %x) -> %x\n", objectState.Version, key.Address, key.Slot, storageValue)
 			}
 		case StateObjectExtra:
 			if extra, ok := objectState.Value.Extra(); ok {
 				b.statedb.SetExtra(key.Address, extra)
+				fmt.Printf("%x: SetExtra(%x) -> %v\n", objectState.Version, key.Address, extra)
 			}
 		}
 		return true
