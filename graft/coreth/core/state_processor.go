@@ -123,6 +123,7 @@ func (p *StateProcessor) processDebug(block *types.Block, parent *types.Header, 
 
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+		fmt.Printf("state_processor: %v\n", msg.Data)
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
