@@ -120,11 +120,13 @@ func (t *TxnState) Finalise(deleteEmptyObjects bool) {
 }
 
 func (t *TxnState) CreateAccount(addr common.Address) {
+	fmt.Printf("TxnState: CreateAccount(%x)\n", addr)
 	t.writeSet.CreateAccount(addr)
 	t.writeSetDirty = true
 }
 
 func (t *TxnState) SetBalance(addr common.Address, value *uint256.Int) {
+	fmt.Printf("TxnState: SetBalance(%x) <- %d\n", addr, value)
 	t.write(BalanceKey(addr), NewBalanceValue(value))
 }
 
@@ -147,67 +149,80 @@ func (t *TxnState) AddBalance(addr common.Address, amount *uint256.Int) {
 }
 
 func (t *TxnState) GetBalance(addr common.Address) *uint256.Int {
+	ret := uint256.NewInt(0)
 	if value, err := t.read(BalanceKey(addr)); err == nil {
 		if balance, ok := value.Balance(); ok {
-			return balance
+			ret = balance
 		}
 	}
-	return uint256.NewInt(0)
+	fmt.Printf("TxnState: GetBalance(%x) -> %d\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) GetNonce(addr common.Address) uint64 {
+	ret := uint64(0)
 	if value, err := t.read(NonceKey(addr)); err == nil {
 		if nonce, ok := value.Nonce(); ok {
-			return nonce
+			ret = nonce
 		}
 	}
-	return 0
+	fmt.Printf("TxnState: GetNonce(%x) -> %d\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) SetNonce(addr common.Address, nonce uint64) {
+	fmt.Printf("TxnState: SetNonce(%x) <- %d\n", addr, nonce)
 	t.write(NonceKey(addr), NewNonceValue(nonce))
 }
 
 func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
+	ret := common.Hash{}
 	if value, err := t.read(CodeHashKey(addr)); err == nil {
 		if codeHash, ok := value.CodeHash(); ok {
-			return codeHash
+			ret = codeHash
 		}
 	}
-	return common.Hash{}
+	fmt.Printf("TxnState: GetCodeHash(%x) -> %x\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) GetCode(addr common.Address) []byte {
+	var ret []byte
 	if value, err := t.read(CodeKey(addr)); err == nil {
 		if code, ok := value.Code(); ok {
-			return code
+			ret = code
 		}
 	}
-	return nil
+	fmt.Printf("TxnState: GetCode(%x) -> %x\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) SetCode(addr common.Address, code []byte) {
 	codeHash := crypto.Keccak256Hash(code)
-	fmt.Printf("TxnState: SetCode(%x) -> %d, %x\n", addr, len(code), codeHash)
+	fmt.Printf("TxnState: SetCode(%x) <- %d, %x\n", addr, len(code), codeHash)
 	t.write(CodeKey(addr), NewCodeValue(code))
 	t.write(CodeHashKey(addr), NewCodeHashValue(codeHash))
 }
 
 func (t *TxnState) GetCodeSize(addr common.Address) int {
+	ret := 0
 	if value, err := t.read(CodeKey(addr)); err == nil {
 		if code, ok := value.Code(); ok {
-			return len(code)
+			ret = len(code)
 		}
 	}
-	return 0
+	fmt.Printf("TxnState: GetCodeSize(%x) -> %d\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) AddRefund(gas uint64) {
+	fmt.Printf("TxnState: AddRefund(%d)\n", gas)
 	t.refund += gas
 	t.writeSetDirty = true
 }
 
 func (t *TxnState) SubRefund(gas uint64) {
+	fmt.Printf("TxnState: SubRefund(%d)\n", gas)
 	if gas > t.refund {
 		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, t.refund))
 	}
@@ -216,6 +231,7 @@ func (t *TxnState) SubRefund(gas uint64) {
 }
 
 func (t *TxnState) GetRefund() uint64 {
+	fmt.Printf("TxnState: GetRefund(%d)\n", t.refund)
 	return t.refund
 }
 
@@ -224,41 +240,49 @@ func (t *TxnState) GetCommittedState(addr common.Address, state_key common.Hash,
 	canonicalKey := state.TransformStateKey(addr, state_key, opt...)
 	key := StorageKey(addr, canonicalKey)
 	versionedValue, _ := t.readFromBase(key)
-	if versionedValue == nil {
-		return common.Hash{}
+	ret := common.Hash{}
+	if versionedValue != nil {
+		if storageValue, ok := versionedValue.Value.Storage(); ok {
+			ret = storageValue
+		}
 	}
-	if storageValue, ok := versionedValue.Value.Storage(); ok {
-		return storageValue
-	}
-	return common.Hash{}
+	fmt.Printf("TxnState: GetCommittedState(%x, %x) -> %x\n", addr, canonicalKey, ret)
+	return ret
 }
 
 func (t *TxnState) GetState(addr common.Address, key common.Hash, opt ...stateconf.StateDBStateOption) common.Hash {
 	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	var ret common.Hash
 	if value, err := t.read(StorageKey(addr, canonicalKey)); err == nil {
 		if storageValue, ok := value.Storage(); ok {
-			return storageValue
+			ret = storageValue
 		}
 	}
-	return common.Hash{}
+	fmt.Printf("TxnState: GetState(%x, %x) -> %x\n", addr, canonicalKey, ret)
+	return ret
 }
 
 func (t *TxnState) SetState(addr common.Address, key, value common.Hash, opt ...stateconf.StateDBStateOption) {
 	canonicalKey := state.TransformStateKey(addr, key, opt...)
+	fmt.Printf("TxnState: SetState(%x, %x) <- %x\n", addr, canonicalKey, value)
 	t.write(StorageKey(addr, canonicalKey), NewStorageValue(value))
 }
 
 // Transient state are local to transaction and not tracked in read/write sets.
 func (t *TxnState) GetTransientState(addr common.Address, key common.Hash) common.Hash {
-	return t.transient.Get(addr, key)
+	ret := t.transient.Get(addr, key)
+	fmt.Printf("TxnState: GetTransientState(%x, %x) -> %x\n", addr, key, ret)
+	return ret
 }
 
 func (t *TxnState) SetTransientState(addr common.Address, key, value common.Hash) {
+	fmt.Printf("TxnState: SetTransientState(%x, %x) <- %x\n", addr, key, value)
 	t.transient.Set(addr, key, value)
 	t.writeSetDirty = true
 }
 
 func (t *TxnState) SelfDestruct(addr common.Address) {
+	fmt.Printf("TxnState: SelfDestruct(%x)\n", addr)
 	t.writeSet.DestructAccount(addr)
 	t.writeSetDirty = true
 }
@@ -266,14 +290,17 @@ func (t *TxnState) SelfDestruct(addr common.Address) {
 // Only checks if an account is marked as self-destructed in the current transaction
 // If the account is destructed in another transaction, it is marked deleted and will not be considered HasSelfDestructed
 func (t *TxnState) HasSelfDestructed(addr common.Address) bool {
+	ret := false
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
-		return op == lifecycleDestructed || op == lifecycleCreatedAndDestructed
+		ret = op == lifecycleDestructed || op == lifecycleCreatedAndDestructed
 	}
-	return false // accounts that do not exist in the first place are not considered self-destructed
+	fmt.Printf("TxnState: HasSelfDestructed(%x) -> %v\n", addr, ret)
+	return ret // accounts that do not exist in the first place are not considered self-destructed
 }
 
 // call SelfDestruct only if the txn is created in the current transaction
 func (t *TxnState) Selfdestruct6780(addr common.Address) {
+	fmt.Printf("TxnState: Selfdestruct6780(%x)\n", addr)
 	t.writeSet.DestructAccount6780(addr)
 	t.writeSetDirty = true
 }
@@ -298,43 +325,52 @@ func (t *TxnState) Exist(addr common.Address) bool {
 
 func (t *TxnState) Empty(addr common.Address) bool {
 	if !t.Exist(addr) {
+		fmt.Printf("TxnState: Empty(%x) -> true\n", addr)
 		return true
 	}
+	ret := true
 	// 1. check if the balance is zero
 	if !t.GetBalance(addr).IsZero() {
-		return false
+		ret = false
 	}
 	// 2. check if the nonce is zero
 	if t.GetNonce(addr) != 0 {
-		return false
+		ret = false
 	}
 	// 3. check if the code is non-empty (non-empty code makes account non-empty)
 	if !bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
-		return false
+		ret = false
 	}
 	// 4. check if extra is empty
 	if extra := t.GetExtra(addr); extra != nil && !extra.IsZero() {
-		return false
+		ret = false
 	}
-	return true
+	fmt.Printf("TxnState: Empty(%x) -> %v\n", addr, ret)
+	return ret
 }
 
 // access list is per-transaction and not tracked in read/write sets.
 func (t *TxnState) AddressInAccessList(addr common.Address) bool {
-	return t.accessList.ContainsAddress(addr)
+	ret := t.accessList.ContainsAddress(addr)
+	fmt.Printf("TxnState: AddressInAccessList(%x) -> %v\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) SlotInAccessList(addr common.Address, slot common.Hash) (bool, bool) {
-	return t.accessList.Contains(addr, slot)
+	ret1, ret2 := t.accessList.Contains(addr, slot)
+	fmt.Printf("TxnState: SlotInAccessList(%x, %x) -> %v, %v\n", addr, slot, ret1, ret2)
+	return ret1, ret2
 }
 
 func (t *TxnState) AddAddressToAccessList(addr common.Address) {
+	fmt.Printf("TxnState: AddAddressToAccessList(%x)\n", addr)
 	if t.accessList.AddAddress(addr) {
 		t.writeSetDirty = true
 	}
 }
 
 func (t *TxnState) AddSlotToAccessList(addr common.Address, slot common.Hash) {
+	fmt.Printf("TxnState: AddSlotToAccessList(%x, %x)\n", addr, slot)
 	if addrAdded, slotAdded := t.accessList.AddSlot(addr, slot); addrAdded || slotAdded {
 		t.writeSetDirty = true
 	}
@@ -400,7 +436,9 @@ func (t *TxnState) Snapshot() int {
 		t.writeSetSnapshots = append(t.writeSetSnapshots, t.captureWriteSetSnapshot())
 	}
 	t.writeSetDirty = false
-	return len(t.writeSetSnapshots)
+	ret := len(t.writeSetSnapshots)
+	fmt.Printf("TxnState: Snapshot() -> %d\n", ret)
+	return ret
 }
 
 func (t *TxnState) AddLog(log *types.Log) {
@@ -453,15 +491,18 @@ func (t *TxnState) Preimages() map[common.Hash][]byte {
 }
 
 func (t *TxnState) GetExtra(addr common.Address) *types.StateAccountExtra {
+	var ret *types.StateAccountExtra
 	if value, err := t.read(ExtraKey(addr)); err == nil {
 		if extra, ok := value.Extra(); ok {
-			return extra
+			ret = extra
 		}
 	}
-	return nil
+	fmt.Printf("TxnState: GetExtra(%x) -> %v\n", addr, ret)
+	return ret
 }
 
 func (t *TxnState) SetExtra(addr common.Address, extra *types.StateAccountExtra) {
+	fmt.Printf("TxnState: SetExtra(%x, %v)\n", addr, extra)
 	t.write(ExtraKey(addr), NewExtraValue(extra))
 }
 
