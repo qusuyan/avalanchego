@@ -406,6 +406,7 @@ func (t *TxnState) Prepare(rules params.Rules, sender, coinbase common.Address, 
 }
 
 func (t *TxnState) RevertToSnapshot(i int) {
+	fmt.Printf("TxnState: RevertToSnapshot(%d)\n", i)
 	if i < 0 || i > len(t.writeSetSnapshots) {
 		panic(fmt.Errorf("invalid snapshot id %d", i))
 	}
