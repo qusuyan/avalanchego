@@ -172,9 +172,6 @@ func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
 	if value, err := t.read(CodeHashKey(addr)); err == nil {
 		if codeHash, ok := value.CodeHash(); ok {
 			return codeHash
-		} else {
-			// this happens if the account is created in the current transaction - return empty code hash instead of 0
-			return types.EmptyCodeHash
 		}
 	}
 	return common.Hash{}
@@ -500,7 +497,12 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 	}
 	// if created in the current transaction, return empty and do not query block state
 	if t.writeSet.IsCreated(key.Address) && key.Kind != StateObjectBalance {
-		return &StateObjectValue{}, nil
+		if key.Kind == StateObjectCodeHash {
+			// For an empty object, the code hash is not zero but EmptyCodeHash
+			return &StateObjectValue{codeHash: &types.EmptyCodeHash}, nil
+		} else {
+			return &StateObjectValue{}, nil
+		}
 	}
 	versionedValue, err := t.readFromBase(key)
 	return &versionedValue.Value, err
