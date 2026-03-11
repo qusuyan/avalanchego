@@ -172,6 +172,9 @@ func (t *TxnState) GetCodeHash(addr common.Address) common.Hash {
 	if value, err := t.read(CodeHashKey(addr)); err == nil {
 		if codeHash, ok := value.CodeHash(); ok {
 			return codeHash
+		} else {
+			// this happens if the account is created in the current transaction - return empty code hash instead of 0
+			return types.EmptyCodeHash
 		}
 	}
 	return common.Hash{}
