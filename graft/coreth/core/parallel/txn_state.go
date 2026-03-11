@@ -77,6 +77,18 @@ func (t *TxnState) TxIndex() int {
 	return t.txIndex
 }
 
+func (t *TxnState) WorkerID() int {
+	return t.workerID
+}
+
+func (t *TxnState) ReadSet() *TxReadSet {
+	return t.readSet
+}
+
+func (t *TxnState) WriteSet() *TxWriteSet {
+	return t.writeSet
+}
+
 // Validate is a placeholder for phase-1 direct StateDB wrapping.
 func (t *TxnState) Validate() bool {
 	return true
@@ -295,8 +307,8 @@ func (t *TxnState) Empty(addr common.Address) bool {
 	if t.GetNonce(addr) != 0 {
 		return false
 	}
-	// 3. check if the code hash is empty
-	if bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
+	// 3. check if the code is non-empty (non-empty code makes account non-empty)
+	if !bytes.Equal(t.GetCodeHash(addr).Bytes(), types.EmptyCodeHash.Bytes()) {
 		return false
 	}
 	// 4. check if extra is empty
@@ -485,7 +497,12 @@ func (t *TxnState) read(key StateObjectKey) (*StateObjectValue, error) {
 	}
 	// if created in the current transaction, return empty and do not query block state
 	if t.writeSet.IsCreated(key.Address) && key.Kind != StateObjectBalance {
-		return &StateObjectValue{}, nil
+		if key.Kind == StateObjectCodeHash {
+			// For an empty object, the code hash is not zero but EmptyCodeHash
+			return &StateObjectValue{codeHash: &types.EmptyCodeHash}, nil
+		} else {
+			return &StateObjectValue{}, nil
+		}
 	}
 	versionedValue, err := t.readFromBase(key)
 	return &versionedValue.Value, err

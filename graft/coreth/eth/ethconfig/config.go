@@ -63,17 +63,17 @@ func NewDefaultConfig() Config {
 		TrieDirtyCache:            256,
 		TrieDirtyCommitTarget:     20,
 		TriePrefetcherParallelism: 16,
-		ParallelExecutionEnabled:  false,
-		ParallelExecutionWorkers:  0,
-		SnapshotCache:             256,
-		AcceptedCacheSize:         32,
-		Miner:                     miner.Config{},
-		TxPool:                    legacypool.DefaultConfig,
-		BlobPool:                  blobpool.DefaultConfig,
-		RPCGasCap:                 25000000,
-		RPCEVMTimeout:             5 * time.Second,
-		GPO:                       DefaultFullGPOConfig,
-		RPCTxFeeCap:               1, // 1 AVAX
+		ParallelExecutionWorkers: 0,
+		ParallelExecutionType:    "sequential",
+		SnapshotCache:            256,
+		AcceptedCacheSize:        32,
+		Miner:                    miner.Config{},
+		TxPool:                   legacypool.DefaultConfig,
+		BlobPool:                 blobpool.DefaultConfig,
+		RPCGasCap:                25000000,
+		RPCEVMTimeout:            5 * time.Second,
+		GPO:                      DefaultFullGPOConfig,
+		RPCTxFeeCap:              1, // 1 AVAX
 	}
 }
 
@@ -108,8 +108,8 @@ type Config struct {
 	TrieDirtyCache            int
 	TrieDirtyCommitTarget     int
 	TriePrefetcherParallelism int
-	ParallelExecutionEnabled  bool // Enables the experimental parallel tx execution path.
-	ParallelExecutionWorkers  int  // Worker count for parallel tx execution (0 means runtime default).
+	ParallelExecutionWorkers  int    // Worker count for parallel tx execution (0 means runtime default).
+	ParallelExecutionType     string // Executor implementation to use in parallel mode.
 	SnapshotCache             int
 	Preimages                 bool
 
