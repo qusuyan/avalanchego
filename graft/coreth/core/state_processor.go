@@ -99,7 +99,7 @@ func (p *StateProcessor) Process(block *types.Block, parent *types.Header, state
 	// } else {
 	// 	return p.processParallel(block, parent, statedb, cfg, execType)
 	// }
-	debug := false
+	debug := true
 	if debug {
 		return p.processDebug(block, parent, statedb, cfg, vmenv, signer)
 	} else {

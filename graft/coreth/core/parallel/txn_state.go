@@ -308,14 +308,17 @@ func (t *TxnState) Selfdestruct6780(addr common.Address) {
 func (t *TxnState) Exist(addr common.Address) bool {
 	if op, ok := t.writeSet.accountLifecycleChanges[addr]; ok {
 		if op == lifecycleCreated || op == lifecycleCreatedAndDestructed {
+			fmt.Printf("TxnState: Exist(%x) -> true\n", addr)
 			return true
 		}
 		// a self-destructed account is considered existing until the end of block execution - we should query BlockState if the account exists
 	}
 	exists, version, err := t.base.Exists(addr, t.workerID)
 	if err != nil {
+		fmt.Printf("TxnState: Exist(%x) -> false\n", addr)
 		return false
 	}
+	fmt.Printf("TxnState: Exist(%x) -> %v\n", addr, exists)
 	if t.readSet.RecordAccountExistence(addr, version) != nil {
 		// TODO: existence read inconsistent with previous read - early terminate
 		return exists
